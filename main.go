@@ -62,6 +62,9 @@ func loadConfig() Config {
 	if cfg.DashboardPort == "" {
 		cfg.DashboardPort = "8080"
 	}
+	if cfg.CFTunnelHost == "" && cfg.CFTunnelID != "" {
+		cfg.CFTunnelHost = cfg.CFTunnelID + ".cfargotunnel.com"
+	}
 	return cfg
 }
 
@@ -159,7 +162,7 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 		logger.Printf("failed to reload caddy: %v", err)
 		return
 	}
-	if cfg.CFAPIToken == "" || cfg.CFAccountID == "" || cfg.CFTunnelID == "" || cfg.CFZoneID == "" || cfg.CFTunnelHost == "" {
+	if cfg.CFAPIToken == "" || cfg.CFAccountID == "" || cfg.CFTunnelID == "" || (cfg.CFZoneID == "" && cfg.CFZoneMap == "") || cfg.CFTunnelHost == "" {
 		logger.Println("cloudflare configuration incomplete, skipping Cloudflare sync")
 		return
 	}

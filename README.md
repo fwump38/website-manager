@@ -12,7 +12,6 @@ CF_API_TOKEN=your_cloudflare_api_token
 CF_ACCOUNT_ID=your_account_id
 CF_TUNNEL_ID=your_tunnel_uuid
 CF_ZONE_MAP=example.com=zone_id_for_example,example2=zone_id_for_example2,example3.com=zone_id_for_example3
-CF_TUNNEL_HOSTNAME=<tunnel-id>.cfargotunnel.com
 CF_ENABLE_WWW_REDIRECT=false
 ```
 
@@ -23,6 +22,10 @@ CF_ZONE_ID=your_zone_id_for_example_com
 CF_ZONE_DOMAIN=example.com
 CF_ENABLE_WWW_REDIRECT=false
 ```
+
+If you use `CF_ZONE_MAP`, then `CF_ZONE_ID` and `CF_ZONE_DOMAIN` are not required.
+
+The tunnel hostname is derived automatically from `CF_TUNNEL_ID` as `<tunnel-id>.cfargotunnel.com`, so `CF_TUNNEL_HOSTNAME` is not required unless you need a custom host value.
 
 2. Run with Docker Compose:
 

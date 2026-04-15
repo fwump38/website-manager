@@ -33,7 +33,6 @@ services:
       - CF_ZONE_ID=${CF_ZONE_ID}
       - CF_ZONE_DOMAIN=${CF_ZONE_DOMAIN}
       - CF_ZONE_MAP=${CF_ZONE_MAP}
-      - CF_TUNNEL_HOSTNAME=${CF_TUNNEL_HOSTNAME}
       - CF_ENABLE_WWW_REDIRECT=false
     depends_on:
       - caddy
