@@ -48,10 +48,13 @@ type dnsRecord struct {
 	TTL     int    `json:"ttl"`
 }
 
+type tunnelConfig struct {
+	Ingress     []map[string]any `json:"ingress"`
+	WarpRouting map[string]any   `json:"warp-routing"`
+}
+
 type tunnelConfigResult struct {
-	Config struct {
-		Ingress []map[string]any `json:"ingress"`
-	} `json:"config"`
+	Config tunnelConfig `json:"config"`
 }
 
 func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
@@ -268,7 +271,8 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 	}
 	newIngress = append(newIngress, map[string]any{"service": "http_status:404"})
 
-	config := map[string]any{"ingress": newIngress}
+	config := current.Config
+	config.Ingress = newIngress
 	body, err := json.Marshal(config)
 	if err != nil {
 		return err
