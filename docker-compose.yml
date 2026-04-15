@@ -10,10 +10,8 @@ services:
       - "443:443"
     volumes:
       - /mnt/user/sites:/sites:ro
-      - caddy_config:/etc/caddy
-      - caddy_data:/data
-    networks:
-      - sitenet
+      - /mnt/user/appdata/caddy/config:/etc/caddy
+      - /mnt/user/appdata/caddy/data:/data
 
   site-manager:
     build: .
@@ -39,13 +37,4 @@ services:
       - CF_TUNNEL_HOSTNAME=${CF_TUNNEL_HOSTNAME}
     depends_on:
       - caddy
-    networks:
-      - sitenet
 
-volumes:
-  caddy_config:
-  caddy_data:
-
-networks:
-  sitenet:
-    driver: bridge
