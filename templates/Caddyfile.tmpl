@@ -6,8 +6,22 @@
 {{- range .Sites}}
 {{.Name}} {
     root * {{$.SitesDir}}/{{.Name}}
-    file_server
+
+    file_server {
+        hide .DS_Store ._.DS_Store ._*
+    }
+
     encode gzip
+
+    @dotfiles path /.*
+    respond @dotfiles 404
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+
     log
 }
 
