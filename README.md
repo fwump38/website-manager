@@ -36,10 +36,27 @@ docker compose up -d --build
 
 Create a restricted Cloudflare API token with the minimum permissions required for this service:
 
-- Account Resources
-  - `Cloudflare Tunnel` -> `Edit`
-- Zone Resources (for each configured zone)
-  - `DNS` -> `Edit`
+Permission groups (create a Custom Token):
+
+- Account: Cloudflare Tunnel: Edit
+
+- Zone: DNS: Edit
+
+- Zone: Zone: Read
+
+The Zone: Read permission is required because the service needs to look up zone metadata when making DNS API calls.
+
+One important gotcha: Cloudflare Tunnel is not the same as Zero Trust in the permissions UI — tunnels are now marketed as "Zero Trust tunnels" but the actual permission group you want is still labeled Cloudflare Tunnel, not Zero Trust.
+
+To create it:
+
+Cloudflare dashboard → My Profile → API Tokens → Create Token → Custom Token
+
+Add the 3 permissions above
+
+Under Zone Resources: Include → Specific zone → [your domain]
+
+No IP filtering needed for a home NAS (unless you want to lock it to your WAN IP)
 
 If you manage multiple domains, include each domain's zone in `CF_ZONE_MAP`. The token must have `DNS Edit` permissions on every zone listed in `CF_ZONE_MAP`.
 
