@@ -49,7 +49,9 @@ type dnsRecord struct {
 }
 
 type tunnelConfigResult struct {
-	Ingress []map[string]any `json:"ingress"`
+	Config struct {
+		Ingress []map[string]any `json:"ingress"`
+	} `json:"config"`
 }
 
 func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
@@ -245,7 +247,7 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 		managedSet[h] = true
 	}
 	unmanaged := []map[string]any{}
-	for _, rule := range current.Ingress {
+	for _, rule := range current.Config.Ingress {
 		if hostname, ok := rule["hostname"].(string); ok {
 			if managedSet[hostname] {
 				continue
