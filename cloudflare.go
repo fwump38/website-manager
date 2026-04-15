@@ -97,11 +97,12 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	for _, site := range enabledSites {
 		enabledMap[site] = true
 	}
+	allSites := state.AllSiteNames()
 
 	// Ensure DNS for each enabled site and its derived hostnames (e.g. www variant).
 	// HasDNS is tracked on the base site name only so it survives directory sync.
 	for _, site := range enabledSites {
-		for _, hostname := range c.getManagedHostnames([]string{site}) {
+		for _, hostname := range c.getManagedHostnames([]string{site}, allSites) {
 			c.logger.Printf("Ensuring DNS for %s", hostname)
 			if err := c.ensureDNS(hostname); err != nil {
 				return err
@@ -116,7 +117,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
 	for _, site := range state.DNSManagedSites() {
 		if !enabledMap[site] {
-			for _, hostname := range c.getManagedHostnames([]string{site}) {
+			for _, hostname := range c.getManagedHostnames([]string{site}, allSites) {
 				c.logger.Printf("Deleting DNS for %s", hostname)
 				if err := c.deleteDNS(hostname); err != nil {
 					return err
@@ -130,7 +131,8 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	}
 
 	c.logger.Printf("Reconciling tunnel ingress")
-	if err := c.reconcileIngress(enabledSites); err != nil {
+	previouslyManagedSites := state.DNSManagedSites()
+	if err := c.reconcileIngress(enabledSites, allSites, previouslyManagedSites); err != nil {
 		return err
 	}
 	return nil
@@ -199,40 +201,60 @@ func (c *CloudflareClient) getTunnelConfig() (*TunnelConfigResult, error) {
 	return &response.Result, nil
 }
 
-func (c *CloudflareClient) getManagedHostnames(enabledSites []string) []string {
+func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites []string) []string {
 	hostnames := make([]string, 0, len(enabledSites)*2)
 	hostSet := make(map[string]bool)
+	allSiteSet := make(map[string]bool)
+	for _, s := range allSites {
+		allSiteSet[strings.ToLower(s)] = true
+	}
 	for _, site := range enabledSites {
 		if !hostSet[site] {
 			hostnames = append(hostnames, site)
 			hostSet[site] = true
 		}
+		// Only add a www. redirect for apex domains (the site name itself is a
+		// configured zone root). Subdomains like foo.example.com must not get a
+		// www.foo.example.com entry. Also skip if www.SITE already exists as a
+		// managed folder.
 		if c.cfg.EnableWWWRedirect && !strings.HasPrefix(site, "www.") {
-			www := "www." + site
-			if !hostSet[www] {
-				hostnames = append(hostnames, www)
-				hostSet[www] = true
+			if _, isApex := c.cfg.ZoneMap[strings.ToLower(site)]; isApex {
+				www := "www." + site
+				if !allSiteSet[strings.ToLower(www)] && !hostSet[www] {
+					hostnames = append(hostnames, www)
+					hostSet[www] = true
+				}
 			}
 		}
 	}
 	return hostnames
 }
 
-func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
+func (c *CloudflareClient) reconcileIngress(enabledSites []string, allSites []string, previouslyManagedSites []string) error {
 	current, err := c.getTunnelConfig()
 	if err != nil {
 		return err
 	}
-	managedHostnames := c.getManagedHostnames(enabledSites)
+	managedHostnames := c.getManagedHostnames(enabledSites, allSites)
 	managedSet := make(map[string]bool)
 	for _, h := range managedHostnames {
 		managedSet[h] = true
 	}
+
+	// Build the set of all hostnames this tool owns: currently enabled and
+	// previously managed (HasDNS=true). Rules for owned hostnames are removed
+	// so disabled sites get cleaned from the tunnel, not left behind.
+	ownedHostnames := c.getManagedHostnames(append(enabledSites, previouslyManagedSites...), allSites)
+	ownedSet := make(map[string]bool)
+	for _, h := range ownedHostnames {
+		ownedSet[h] = true
+	}
+
 	unmanaged := []map[string]interface{}{}
 	for _, rule := range current.Config.Ingress {
 		if hostname, ok := rule["hostname"].(string); ok {
-			if managedSet[hostname] {
-				continue
+			if ownedSet[hostname] {
+				continue // drop: will be re-added only if still enabled
 			}
 		} else if service, ok := rule["service"].(string); ok && service == "http_status:404" {
 			continue // skip existing catch-all
