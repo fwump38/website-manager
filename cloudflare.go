@@ -252,6 +252,8 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 			if managedSet[hostname] {
 				continue
 			}
+		} else if service, ok := rule["service"].(string); ok && service == "http_status:404" {
+			continue // skip existing catch-all
 		}
 		unmanaged = append(unmanaged, rule)
 	}
