@@ -6,8 +6,7 @@ services:
     container_name: caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "8383:80"
     volumes:
       - /mnt/user/sites:/sites:ro
       - /mnt/user/appdata/caddy/config:/etc/caddy
@@ -21,7 +20,7 @@ services:
       - "8080:8080"
     volumes:
       - /mnt/user/sites:/sites
-      - caddy_config:/etc/caddy
+      - /mnt/user/appdata/caddy/config:/etc/caddy
     environment:
       - SITES_DIR=/sites
       - STATE_FILE=/sites/enabled.json
