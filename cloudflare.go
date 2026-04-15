@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,6 +24,7 @@ type CloudflareConfig struct {
 type CloudflareClient struct {
 	cfg        CloudflareConfig
 	httpClient *http.Client
+	logger     *log.Logger
 }
 
 type cfAPIError struct {
@@ -50,7 +52,7 @@ type tunnelConfigResult struct {
 	Ingress []map[string]any `json:"ingress"`
 }
 
-func NewCloudflareClient(cfg Config) *CloudflareClient {
+func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
 	zoneMap, _ := parseZoneMap(cfg.CFZoneMap, cfg.CFZoneID, cfg.CFZoneDomain)
 	return &CloudflareClient{
 		cfg: CloudflareConfig{
@@ -62,6 +64,7 @@ func NewCloudflareClient(cfg Config) *CloudflareClient {
 			EnableWWWRedirect: cfg.CFEnableWWWRedirect,
 		},
 		httpClient: &http.Client{Timeout: 15 * time.Second},
+		logger:     logger,
 	}
 }
 
@@ -266,6 +269,7 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 	if err != nil {
 		return err
 	}
+	c.logger.Printf("Cloudflare tunnel config update body: %s", string(body))
 	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/cfd_tunnel/%s/configurations", url.PathEscape(c.cfg.AccountID), url.PathEscape(c.cfg.TunnelID))
 	var result apiResponse[tunnelConfigResult]
 	if err := c.doRequest(http.MethodPut, endpoint, bytes.NewReader(body), &result); err != nil {
@@ -275,6 +279,7 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 }
 
 func (c *CloudflareClient) doRequest(method, url string, body io.Reader, out any) error {
+	c.logger.Printf("Cloudflare API request: %s %s", method, url)
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return err

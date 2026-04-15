@@ -78,7 +78,7 @@ func main() {
 	}
 
 	reconcileCh := make(chan struct{}, 1)
-	cfClient := NewCloudflareClient(cfg)
+	cfClient := NewCloudflareClient(cfg, logger)
 	caddy := &CaddyManager{
 		SitesDir:     cfg.SitesDir,
 		TemplatePath: filepath.Join(cfg.TemplatesDir, "Caddyfile.tmpl"),
