@@ -22,10 +22,10 @@ CF_ZONE_ID=your_zone_id_for_example_com
 CF_ZONE_DOMAIN=example.com
 ```
 
-2. Build and run with Docker Compose:
+2. Run with Docker Compose:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 3. Visit the dashboard on port `8080` to view discovered sites and toggle them on/off.

@@ -6,14 +6,14 @@ services:
     container_name: caddy
     restart: unless-stopped
     ports:
-      - "8383:80"
+      - "80:80"
     volumes:
       - /mnt/user/sites:/sites:ro
       - /mnt/user/appdata/caddy/config:/etc/caddy
       - /mnt/user/appdata/caddy/data:/data
 
   site-manager:
-    build: .
+    image: ghcr.io/fwump38/website-manager:latest
     container_name: site-manager
     restart: unless-stopped
     ports:
