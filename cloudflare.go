@@ -12,11 +12,12 @@ import (
 )
 
 type CloudflareConfig struct {
-	APIToken   string
-	AccountID  string
-	ZoneMap    map[string]string
-	TunnelID   string
-	TunnelHost string
+	APIToken          string
+	AccountID         string
+	ZoneMap           map[string]string
+	TunnelID          string
+	TunnelHost        string
+	EnableWWWRedirect bool
 }
 
 type CloudflareClient struct {
@@ -53,11 +54,12 @@ func NewCloudflareClient(cfg Config) *CloudflareClient {
 	zoneMap, _ := parseZoneMap(cfg.CFZoneMap, cfg.CFZoneID, cfg.CFZoneDomain)
 	return &CloudflareClient{
 		cfg: CloudflareConfig{
-			APIToken:   cfg.CFAPIToken,
-			AccountID:  cfg.CFAccountID,
-			ZoneMap:    zoneMap,
-			TunnelID:   cfg.CFTunnelID,
-			TunnelHost: cfg.CFTunnelHost,
+			APIToken:          cfg.CFAPIToken,
+			AccountID:         cfg.CFAccountID,
+			ZoneMap:           zoneMap,
+			TunnelID:          cfg.CFTunnelID,
+			TunnelHost:        cfg.CFTunnelHost,
+			EnableWWWRedirect: cfg.CFEnableWWWRedirect,
 		},
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
@@ -113,7 +115,8 @@ func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
 		enabledMap[site] = true
 	}
 
-	for _, site := range enabledSites {
+	managedHostnames := c.getManagedHostnames(enabledSites)
+	for _, site := range managedHostnames {
 		if err := c.ensureDNS(site); err != nil {
 			return err
 		}
@@ -200,17 +203,64 @@ func (c *CloudflareClient) getDNSRecord(hostname string) (*dnsRecord, error) {
 	return &response.Result[0], nil
 }
 
-func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
-	ingress := make([]map[string]any, 0, len(enabledSites)+1)
+func (c *CloudflareClient) getTunnelConfig() (*tunnelConfigResult, error) {
+	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/cfd_tunnel/%s/configurations", url.PathEscape(c.cfg.AccountID), url.PathEscape(c.cfg.TunnelID))
+	var response apiResponse[tunnelConfigResult]
+	if err := c.doRequest(http.MethodGet, endpoint, nil, &response); err != nil {
+		return nil, err
+	}
+	return &response.Result, nil
+}
+
+func (c *CloudflareClient) getManagedHostnames(enabledSites []string) []string {
+	hostnames := make([]string, 0, len(enabledSites)*2)
+	hostSet := make(map[string]bool)
 	for _, site := range enabledSites {
-		ingress = append(ingress, map[string]any{
-			"hostname": site,
+		if !hostSet[site] {
+			hostnames = append(hostnames, site)
+			hostSet[site] = true
+		}
+		if c.cfg.EnableWWWRedirect && !strings.HasPrefix(site, "www.") {
+			www := "www." + site
+			if !hostSet[www] {
+				hostnames = append(hostnames, www)
+				hostSet[www] = true
+			}
+		}
+	}
+	return hostnames
+}
+
+func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
+	current, err := c.getTunnelConfig()
+	if err != nil {
+		return err
+	}
+	managedHostnames := c.getManagedHostnames(enabledSites)
+	managedSet := make(map[string]bool)
+	for _, h := range managedHostnames {
+		managedSet[h] = true
+	}
+	unmanaged := []map[string]any{}
+	for _, rule := range current.Ingress {
+		if hostname, ok := rule["hostname"].(string); ok {
+			if managedSet[hostname] {
+				continue
+			}
+		}
+		unmanaged = append(unmanaged, rule)
+	}
+	newIngress := make([]map[string]any, 0, len(unmanaged) + len(managedHostnames) + 1)
+	newIngress = append(newIngress, unmanaged...)
+	for _, hostname := range managedHostnames {
+		newIngress = append(newIngress, map[string]any{
+			"hostname": hostname,
 			"service":  "http://caddy:80",
 		})
 	}
-	ingress = append(ingress, map[string]any{"service": "http_status:404"})
+	newIngress = append(newIngress, map[string]any{"service": "http_status:404"})
 
-	config := map[string]any{"ingress": ingress}
+	config := map[string]any{"ingress": newIngress}
 	body, err := json.Marshal(config)
 	if err != nil {
 		return err

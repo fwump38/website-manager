@@ -13,36 +13,38 @@ import (
 )
 
 type Config struct {
-	SitesDir      string
-	StateFile     string
-	CaddyAdminURL string
-	CaddyfilePath string
-	DashboardPort string
-	CFAPIToken    string
-	CFAccountID   string
-	CFTunnelID    string
-	CFZoneID      string
-	CFZoneDomain  string
-	CFZoneMap     string
-	CFTunnelHost  string
-	TemplatesDir  string
+	SitesDir             string
+	StateFile            string
+	CaddyAdminURL        string
+	CaddyfilePath        string
+	DashboardPort        string
+	CFAPIToken           string
+	CFAccountID          string
+	CFTunnelID           string
+	CFZoneID             string
+	CFZoneDomain         string
+	CFZoneMap            string
+	CFTunnelHost         string
+	CFEnableWWWRedirect  bool
+	TemplatesDir         string
 }
 
 func loadConfig() Config {
 	cfg := Config{
-		SitesDir:      os.Getenv("SITES_DIR"),
-		StateFile:     os.Getenv("STATE_FILE"),
-		CaddyAdminURL: os.Getenv("CADDY_ADMIN_URL"),
-		CaddyfilePath: os.Getenv("CADDYFILE_OUTPUT"),
-		DashboardPort: os.Getenv("DASHBOARD_PORT"),
-		CFAPIToken:    os.Getenv("CF_API_TOKEN"),
-		CFAccountID:   os.Getenv("CF_ACCOUNT_ID"),
-		CFTunnelID:    os.Getenv("CF_TUNNEL_ID"),
-		CFZoneID:      os.Getenv("CF_ZONE_ID"),
-		CFZoneDomain:  os.Getenv("CF_ZONE_DOMAIN"),
-		CFZoneMap:     os.Getenv("CF_ZONE_MAP"),
-		CFTunnelHost:  os.Getenv("CF_TUNNEL_HOSTNAME"),
-		TemplatesDir:  "templates",
+		SitesDir:             os.Getenv("SITES_DIR"),
+		StateFile:            os.Getenv("STATE_FILE"),
+		CaddyAdminURL:        os.Getenv("CADDY_ADMIN_URL"),
+		CaddyfilePath:        os.Getenv("CADDYFILE_OUTPUT"),
+		DashboardPort:        os.Getenv("DASHBOARD_PORT"),
+		CFAPIToken:           os.Getenv("CF_API_TOKEN"),
+		CFAccountID:          os.Getenv("CF_ACCOUNT_ID"),
+		CFTunnelID:           os.Getenv("CF_TUNNEL_ID"),
+		CFZoneID:             os.Getenv("CF_ZONE_ID"),
+		CFZoneDomain:         os.Getenv("CF_ZONE_DOMAIN"),
+		CFZoneMap:            os.Getenv("CF_ZONE_MAP"),
+		CFTunnelHost:         os.Getenv("CF_TUNNEL_HOSTNAME"),
+		CFEnableWWWRedirect:  os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
+		TemplatesDir:         "templates",
 	}
 
 	if cfg.SitesDir == "" {

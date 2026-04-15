@@ -1,7 +1,7 @@
 # website-manager
 A Golang-based site manager for Caddy and Cloudflare.
 
-This service watches a mounted sites directory, tracks site enable/disable state in `enabled.json`, regenerates a single-port Caddyfile, reloads Caddy, and syncs Cloudflare DNS and Tunnel ingress rules.
+This service watches a mounted sites directory, tracks site enable/disable state in `enabled.json`, regenerates a single-port Caddyfile, reloads Caddy, and syncs Cloudflare DNS and Tunnel ingress rules while preserving existing tunnel routes not managed by the site manager.
 
 ## Quick start
 
@@ -13,6 +13,7 @@ CF_ACCOUNT_ID=your_account_id
 CF_TUNNEL_ID=your_tunnel_uuid
 CF_ZONE_MAP=example.com=zone_id_for_example,example2=zone_id_for_example2,example3.com=zone_id_for_example3
 CF_TUNNEL_HOSTNAME=<tunnel-id>.cfargotunnel.com
+CF_ENABLE_WWW_REDIRECT=false
 ```
 
 If you are using a single zone, you may instead set:
@@ -20,6 +21,7 @@ If you are using a single zone, you may instead set:
 ```env
 CF_ZONE_ID=your_zone_id_for_example_com
 CF_ZONE_DOMAIN=example.com
+CF_ENABLE_WWW_REDIRECT=false
 ```
 
 2. Run with Docker Compose:
@@ -31,6 +33,10 @@ docker compose up -d
 3. Visit the dashboard on port `8080` to view discovered sites and toggle them on/off.
 
 > Each directory under the mounted sites share should be named with the full hostname you want to serve, for example `example.com`, `blog.example2`, or `shop.example3.com`.
+
+## Optional www Redirect
+
+Set `CF_ENABLE_WWW_REDIRECT=true` to automatically add ingress rules for `www.<domain>` in addition to `<domain>` for base domains in the sites folder. If both `www.<domain>` and `<domain>` folders exist, they are served independently. This does not affect DNS or Caddy configuration, only Cloudflare tunnel ingress.
 
 ## Cloudflare API token
 
