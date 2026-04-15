@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /mnt/user/sites:/sites:ro
+      - caddy_config:/etc/caddy
+      - caddy_data:/data
+    networks:
+      - sitenet
+
+  site-manager:
+    build: .
+    container_name: site-manager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /mnt/user/sites:/sites
+      - caddy_config:/etc/caddy
+    environment:
+      - SITES_DIR=/sites
+      - STATE_FILE=/sites/enabled.json
+      - CADDYFILE_OUTPUT=/etc/caddy/Caddyfile
+      - CADDY_ADMIN_URL=http://caddy:2019
+      - DASHBOARD_PORT=8080
+      - CF_API_TOKEN=${CF_API_TOKEN}
+      - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
+      - CF_TUNNEL_ID=${CF_TUNNEL_ID}
+      - CF_ZONE_ID=${CF_ZONE_ID}
+      - CF_ZONE_DOMAIN=${CF_ZONE_DOMAIN}
+      - CF_ZONE_MAP=${CF_ZONE_MAP}
+      - CF_TUNNEL_HOSTNAME=${CF_TUNNEL_HOSTNAME}
+    depends_on:
+      - caddy
+    networks:
+      - sitenet
+
+volumes:
+  caddy_config:
+  caddy_data:
+
+networks:
+  sitenet:
+    driver: bridge

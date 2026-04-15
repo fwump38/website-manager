@@ -1,0 +1,19 @@
+{
+    admin 0.0.0.0:2019
+}
+
+{{- if .Sites}}
+{{- range .Sites}}
+{{.Name}} {
+    root * {{$.SitesDir}}/{{.Name}}
+    file_server
+    encode gzip
+    log
+}
+
+{{- end}}
+{{- else}}
+:80 {
+    respond "No sites enabled" 404
+}
+{{- end}}
