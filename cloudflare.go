@@ -18,6 +18,7 @@ type CloudflareConfig struct {
 	TunnelID          string
 	TunnelHost        string
 	EnableWWWRedirect bool
+	CaddyServiceURL   string
 }
 
 type CloudflareClient struct {
@@ -41,6 +42,7 @@ func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
 			TunnelID:          cfg.CFTunnelID,
 			TunnelHost:        cfg.CFTunnelHost,
 			EnableWWWRedirect: cfg.CFEnableWWWRedirect,
+			CaddyServiceURL:   cfg.CaddyServiceURL,
 		},
 	}
 }
@@ -89,28 +91,42 @@ func (c *CloudflareClient) zoneIDForHostname(hostname string) (string, bool) {
 	return c.cfg.ZoneMap[bestMatch], true
 }
 
-func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
+func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSites []string) error {
 	c.logger.Printf("Starting Cloudflare reconciliation for enabled sites: %v", enabledSites)
 	enabledMap := map[string]bool{}
 	for _, site := range enabledSites {
 		enabledMap[site] = true
 	}
 
-	managedHostnames := c.getManagedHostnames(enabledSites)
-	for _, site := range managedHostnames {
-		c.logger.Printf("Ensuring DNS for %s", site)
-		if err := c.ensureDNS(site); err != nil {
-			return err
-		}
-	}
-
-	for _, site := range knownSites {
-		if !enabledMap[site] {
-			c.logger.Printf("Deleting DNS for %s", site)
-			if err := c.deleteDNS(site); err != nil {
+	// Ensure DNS for each enabled site and its derived hostnames (e.g. www variant).
+	// HasDNS is tracked on the base site name only so it survives directory sync.
+	for _, site := range enabledSites {
+		for _, hostname := range c.getManagedHostnames([]string{site}) {
+			c.logger.Printf("Ensuring DNS for %s", hostname)
+			if err := c.ensureDNS(hostname); err != nil {
 				return err
 			}
 		}
+		state.SetHasDNS(site, true)
+	}
+	if err := state.Save(stateFile); err != nil {
+		return fmt.Errorf("failed to save state after DNS ensure: %w", err)
+	}
+
+	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
+	for _, site := range state.DNSManagedSites() {
+		if !enabledMap[site] {
+			for _, hostname := range c.getManagedHostnames([]string{site}) {
+				c.logger.Printf("Deleting DNS for %s", hostname)
+				if err := c.deleteDNS(hostname); err != nil {
+					return err
+				}
+			}
+			state.SetHasDNS(site, false)
+		}
+	}
+	if err := state.Save(stateFile); err != nil {
+		return fmt.Errorf("failed to save state after DNS delete: %w", err)
 	}
 
 	c.logger.Printf("Reconciling tunnel ingress")
@@ -228,7 +244,7 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 	for _, hostname := range managedHostnames {
 		newIngress = append(newIngress, map[string]interface{}{
 			"hostname":      hostname,
-			"service":       "http://caddy:80",
+			"service":       c.cfg.CaddyServiceURL,
 			"originRequest": map[string]interface{}{},
 		})
 	}

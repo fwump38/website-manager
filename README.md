@@ -13,6 +13,7 @@ CF_ACCOUNT_ID=your_account_id
 CF_TUNNEL_ID=your_tunnel_uuid
 CF_ZONE_MAP=example.com=zone_id_for_example,example2=zone_id_for_example2,example3.com=zone_id_for_example3
 CF_ENABLE_WWW_REDIRECT=false
+# CADDY_SERVICE_URL=http://192.168.1.2:8383  # set to host LAN IP:port if tunnel is outside Docker network
 ```
 
 If you are using a single zone, you may instead set:
@@ -20,7 +21,6 @@ If you are using a single zone, you may instead set:
 ```env
 CF_ZONE_ID=your_zone_id_for_example_com
 CF_ZONE_DOMAIN=example.com
-CF_ENABLE_WWW_REDIRECT=false
 ```
 
 If you use `CF_ZONE_MAP`, then `CF_ZONE_ID` and `CF_ZONE_DOMAIN` are not required.

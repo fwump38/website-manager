@@ -11,6 +11,7 @@ import (
 type SiteInfo struct {
 	Enabled      bool      `json:"enabled"`
 	DiscoveredAt time.Time `json:"discovered_at"`
+	HasDNS       bool      `json:"has_dns,omitempty"`
 }
 
 type State struct {
@@ -94,6 +95,27 @@ func (s *State) SetEnabled(site string, enabled bool) {
 	}
 	info.Enabled = enabled
 	s.Sites[site] = info
+}
+
+func (s *State) SetHasDNS(site string, v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info := s.Sites[site]
+	info.HasDNS = v
+	s.Sites[site] = info
+}
+
+func (s *State) DNSManagedSites() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var sites []string
+	for name, info := range s.Sites {
+		if info.HasDNS {
+			sites = append(sites, name)
+		}
+	}
+	sort.Strings(sites)
+	return sites
 }
 
 func (s *State) EnabledSites() []string {

@@ -13,38 +13,40 @@ import (
 )
 
 type Config struct {
-	SitesDir             string
-	StateFile            string
-	CaddyAdminURL        string
-	CaddyfilePath        string
-	DashboardPort        string
-	CFAPIToken           string
-	CFAccountID          string
-	CFTunnelID           string
-	CFZoneID             string
-	CFZoneDomain         string
-	CFZoneMap            string
-	CFTunnelHost         string
-	CFEnableWWWRedirect  bool
-	TemplatesDir         string
+	SitesDir            string
+	StateFile           string
+	CaddyAdminURL       string
+	CaddyfilePath       string
+	CaddyServiceURL     string
+	DashboardPort       string
+	CFAPIToken          string
+	CFAccountID         string
+	CFTunnelID          string
+	CFZoneID            string
+	CFZoneDomain        string
+	CFZoneMap           string
+	CFTunnelHost        string
+	CFEnableWWWRedirect bool
+	TemplatesDir        string
 }
 
 func loadConfig() Config {
 	cfg := Config{
-		SitesDir:             os.Getenv("SITES_DIR"),
-		StateFile:            os.Getenv("STATE_FILE"),
-		CaddyAdminURL:        os.Getenv("CADDY_ADMIN_URL"),
-		CaddyfilePath:        os.Getenv("CADDYFILE_OUTPUT"),
-		DashboardPort:        os.Getenv("DASHBOARD_PORT"),
-		CFAPIToken:           os.Getenv("CF_API_TOKEN"),
-		CFAccountID:          os.Getenv("CF_ACCOUNT_ID"),
-		CFTunnelID:           os.Getenv("CF_TUNNEL_ID"),
-		CFZoneID:             os.Getenv("CF_ZONE_ID"),
-		CFZoneDomain:         os.Getenv("CF_ZONE_DOMAIN"),
-		CFZoneMap:            os.Getenv("CF_ZONE_MAP"),
-		CFTunnelHost:         os.Getenv("CF_TUNNEL_HOSTNAME"),
-		CFEnableWWWRedirect:  os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
-		TemplatesDir:         "templates",
+		SitesDir:            os.Getenv("SITES_DIR"),
+		StateFile:           os.Getenv("STATE_FILE"),
+		CaddyAdminURL:       os.Getenv("CADDY_ADMIN_URL"),
+		CaddyfilePath:       os.Getenv("CADDYFILE_OUTPUT"),
+		CaddyServiceURL:     os.Getenv("CADDY_SERVICE_URL"),
+		DashboardPort:       os.Getenv("DASHBOARD_PORT"),
+		CFAPIToken:          os.Getenv("CF_API_TOKEN"),
+		CFAccountID:         os.Getenv("CF_ACCOUNT_ID"),
+		CFTunnelID:          os.Getenv("CF_TUNNEL_ID"),
+		CFZoneID:            os.Getenv("CF_ZONE_ID"),
+		CFZoneDomain:        os.Getenv("CF_ZONE_DOMAIN"),
+		CFZoneMap:           os.Getenv("CF_ZONE_MAP"),
+		CFTunnelHost:        os.Getenv("CF_TUNNEL_HOSTNAME"),
+		CFEnableWWWRedirect: os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
+		TemplatesDir:        "templates",
 	}
 
 	if cfg.SitesDir == "" {
@@ -64,6 +66,9 @@ func loadConfig() Config {
 	}
 	if cfg.CFTunnelHost == "" && cfg.CFTunnelID != "" {
 		cfg.CFTunnelHost = cfg.CFTunnelID + ".cfargotunnel.com"
+	}
+	if cfg.CaddyServiceURL == "" {
+		cfg.CaddyServiceURL = "http://caddy:80"
 	}
 	return cfg
 }
@@ -166,7 +171,7 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 		logger.Println("cloudflare configuration incomplete, skipping Cloudflare sync")
 		return
 	}
-	if err := cf.Reconcile(enabledSites, state.AllSiteNames()); err != nil {
+	if err := cf.Reconcile(state, cfg.StateFile, enabledSites); err != nil {
 		logger.Printf("failed to reconcile cloudflare: %v", err)
 	}
 }
