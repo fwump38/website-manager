@@ -254,8 +254,9 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 	newIngress = append(newIngress, unmanaged...)
 	for _, hostname := range managedHostnames {
 		newIngress = append(newIngress, map[string]any{
-			"hostname": hostname,
-			"service":  "http://caddy:80",
+			"hostname":      hostname,
+			"service":       "http://caddy:80",
+			"originRequest": map[string]any{},
 		})
 	}
 	newIngress = append(newIngress, map[string]any{"service": "http_status:404"})
