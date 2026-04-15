@@ -1,18 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
+	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
 
 	"github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
 )
 
@@ -25,19 +20,10 @@ type CloudflareConfig struct {
 	EnableWWWRedirect bool
 }
 
-type dnsRecord struct {
-	ID      string `json:"id,omitempty"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Proxied bool   `json:"proxied"`
-	TTL     int    `json:"ttl"`
-}
-
 type CloudflareClient struct {
-	client     *cloudflare.Client
-	cfg        CloudflareConfig
-	httpClient *http.Client
+	client *cloudflare.Client
+	cfg    CloudflareConfig
+	logger *log.Logger
 }
 
 func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
@@ -46,8 +32,8 @@ func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
 		option.WithAPIToken(cfg.CFAPIToken),
 	)
 	return &CloudflareClient{
-		client:     client,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		client: client,
+		logger: logger,
 		cfg: CloudflareConfig{
 			APIToken:          cfg.CFAPIToken,
 			AccountID:         cfg.CFAccountID,
@@ -104,6 +90,7 @@ func (c *CloudflareClient) zoneIDForHostname(hostname string) (string, bool) {
 }
 
 func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
+	c.logger.Printf("Starting Cloudflare reconciliation for enabled sites: %v", enabledSites)
 	enabledMap := map[string]bool{}
 	for _, site := range enabledSites {
 		enabledMap[site] = true
@@ -111,6 +98,7 @@ func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
 
 	managedHostnames := c.getManagedHostnames(enabledSites)
 	for _, site := range managedHostnames {
+		c.logger.Printf("Ensuring DNS for %s", site)
 		if err := c.ensureDNS(site); err != nil {
 			return err
 		}
@@ -118,12 +106,14 @@ func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
 
 	for _, site := range knownSites {
 		if !enabledMap[site] {
+			c.logger.Printf("Deleting DNS for %s", site)
 			if err := c.deleteDNS(site); err != nil {
 				return err
 			}
 		}
 	}
 
+	c.logger.Printf("Reconciling tunnel ingress")
 	if err := c.reconcileIngress(enabledSites); err != nil {
 		return err
 	}
@@ -133,70 +123,44 @@ func (c *CloudflareClient) Reconcile(enabledSites, knownSites []string) error {
 func (c *CloudflareClient) ensureDNS(hostname string) error {
 	zoneID, ok := c.zoneIDForHostname(hostname)
 	if !ok {
-		return errors.New("no zone configured for hostname")
+		return fmt.Errorf("no zone configured for hostname %s", hostname)
 	}
-	record, err := c.getDNSRecord(hostname)
+	recordID, err := c.getDNSRecordID(zoneID, hostname)
 	if err != nil {
 		return err
 	}
-	if record != nil {
+	if recordID != "" {
 		return nil
 	}
 
-	payload := dnsRecord{
-		Type:    "CNAME",
-		Name:    hostname,
-		Content: c.cfg.TunnelHost,
-		Proxied: true,
-		TTL:     1,
-	}
-	body, err := json.Marshal(payload)
+	ctx := context.Background()
+	_, err = c.client.DNS.Records.New(ctx, dns.RecordNewParams{
+		ZoneID: cloudflare.F(zoneID),
+		Body: dns.CNAMERecordParam{
+			Name:    cloudflare.F(hostname),
+			Content: cloudflare.F(c.cfg.TunnelHost),
+			Proxied: cloudflare.F(true),
+			TTL:     cloudflare.F(dns.TTL(1)),
+			Type:    cloudflare.F(dns.CNAMERecordTypeCNAME),
+		},
+	})
+	return err
+}
+
+func (c *CloudflareClient) getDNSRecordID(zoneID, hostname string) (string, error) {
+	ctx := context.Background()
+	page, err := c.client.DNS.Records.List(ctx, dns.RecordListParams{
+		ZoneID: cloudflare.F(zoneID),
+		Type:   cloudflare.F(dns.RecordListParamsTypeCNAME),
+		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
+	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", url.PathEscape(zoneID))
-	var result dnsRecord
-	if err := c.doRequest(http.MethodPost, endpoint, bytes.NewReader(body), &result); err != nil {
-		return err
+	if len(page.Result) == 0 {
+		return "", nil
 	}
-	if result.ID == "" {
-		return fmt.Errorf("failed to create dns record for %s", hostname)
-	}
-	return nil
-}
-
-
-func (c *CloudflareClient) getDNSRecord(hostname string) (*dnsRecord, error) {
-	zoneID, ok := c.zoneIDForHostname(hostname)
-	if !ok {
-		return nil, nil
-	}
-	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=CNAME&name=%s", url.PathEscape(zoneID), url.QueryEscape(hostname))
-	var response struct {
-		Success bool        `json:"success"`
-		Errors  []struct{}  `json:"errors"`
-		Result  []dnsRecord `json:"result"`
-	}
-	if err := c.doRequest(http.MethodGet, apiURL, nil, &response); err != nil {
-		return nil, err
-	}
-	if len(response.Result) == 0 {
-		return nil, nil
-	}
-	return &response.Result[0], nil
-}
-
-func (c *CloudflareClient) getTunnelConfig() (*TunnelConfigResult, error) {
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/cfd_tunnel/%s/configurations", url.PathEscape(c.cfg.AccountID), url.PathEscape(c.cfg.TunnelID))
-	var response struct {
-		Success bool               `json:"success"`
-		Errors  []interface{}      `json:"errors"`
-		Result  TunnelConfigResult `json:"result"`
-	}
-	if err := c.doRequest(http.MethodGet, endpoint, nil, &response); err != nil {
-		return nil, err
-	}
-	return &response.Result, nil
+	return page.Result[0].ID, nil
 }
 
 type TunnelConfigResult struct {
@@ -206,6 +170,17 @@ type TunnelConfigResult struct {
 type TunnelConfig struct {
 	Ingress     []map[string]interface{} `json:"ingress"`
 	WarpRouting map[string]interface{}   `json:"warp-routing"`
+}
+
+func (c *CloudflareClient) getTunnelConfig() (*TunnelConfigResult, error) {
+	path := fmt.Sprintf("/accounts/%s/cfd_tunnel/%s/configurations", c.cfg.AccountID, c.cfg.TunnelID)
+	var response struct {
+		Result TunnelConfigResult `json:"result"`
+	}
+	if err := c.client.Get(context.Background(), path, nil, &response); err != nil {
+		return nil, err
+	}
+	return &response.Result, nil
 }
 
 func (c *CloudflareClient) getManagedHostnames(enabledSites []string) []string {
@@ -248,7 +223,7 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 		}
 		unmanaged = append(unmanaged, rule)
 	}
-	newIngress := make([]map[string]interface{}, 0, len(unmanaged) + len(managedHostnames) + 1)
+	newIngress := make([]map[string]interface{}, 0, len(unmanaged)+len(managedHostnames)+1)
 	newIngress = append(newIngress, unmanaged...)
 	for _, hostname := range managedHostnames {
 		newIngress = append(newIngress, map[string]interface{}{
@@ -259,72 +234,31 @@ func (c *CloudflareClient) reconcileIngress(enabledSites []string) error {
 	}
 	newIngress = append(newIngress, map[string]interface{}{"service": "http_status:404"})
 
-	config := map[string]interface{}{
-		"ingress":      newIngress,
-		"warp-routing": current.Config.WarpRouting,
+	body := map[string]interface{}{
+		"config": map[string]interface{}{
+			"ingress":      newIngress,
+			"warp-routing": current.Config.WarpRouting,
+		},
 	}
-	body, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/cfd_tunnel/%s/configurations", url.PathEscape(c.cfg.AccountID), url.PathEscape(c.cfg.TunnelID))
-	var result interface{}
-	if err := c.doRequest(http.MethodPut, endpoint, bytes.NewReader(body), &result); err != nil {
-		return err
-	}
-	return nil
+	path := fmt.Sprintf("/accounts/%s/cfd_tunnel/%s/configurations", c.cfg.AccountID, c.cfg.TunnelID)
+	return c.client.Put(context.Background(), path, body, nil)
 }
-
-func (c *CloudflareClient) doRequest(method, url string, body io.Reader, out any) error {
-	req, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIToken)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-		} else {
-			defer resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				respBody, _ := io.ReadAll(resp.Body)
-				lastErr = errors.New(fmt.Sprintf("cloudflare api error status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody))))
-			} else if out != nil {
-				decoder := json.NewDecoder(resp.Body)
-				if err := decoder.Decode(out); err != nil {
-					lastErr = err
-				} else {
-					return nil
-				}
-			} else {
-				return nil
-			}
-		}
-		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
-	}
-	return lastErr
-}
-
-
 
 func (c *CloudflareClient) deleteDNS(hostname string) error {
 	zoneID, ok := c.zoneIDForHostname(hostname)
 	if !ok {
 		return nil
 	}
-	record, err := c.getDNSRecord(hostname)
+	recordID, err := c.getDNSRecordID(zoneID, hostname)
 	if err != nil {
 		return err
 	}
-	if record == nil {
+	if recordID == "" {
 		return nil
 	}
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones//dns_records/", url.PathEscape(zoneID), url.PathEscape(record.ID))
-	return c.doRequest(http.MethodDelete, endpoint, nil, nil)
+	ctx := context.Background()
+	_, err = c.client.DNS.Records.Delete(ctx, recordID, dns.RecordDeleteParams{
+		ZoneID: cloudflare.F(zoneID),
+	})
+	return err
 }
