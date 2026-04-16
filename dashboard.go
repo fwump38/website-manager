@@ -404,15 +404,23 @@ var previewSrcsetRe = regexp.MustCompile(`(srcset\s*=\s*["'])([^"']+)(["'])`)
 // previewAbsSrcURLRe matches absolute paths (not protocol-relative) within srcset values.
 var previewAbsSrcURLRe = regexp.MustCompile(`(/[^/\s,'"<>][^\s,'"<>]*)`)
 
-// rewritePreviewResponse rewrites absolute paths in HTML responses to include
-// the preview prefix so that assets and navigation work correctly.
+// previewJSAbsPathRe matches string literals in JavaScript (double, single, or backtick
+// quoted) that contain absolute paths under /assets/ — the standard Vite/bundler output
+// directory. This covers CSS chunks, JS chunks, images, and fonts injected at runtime.
+var previewJSAbsPathRe = regexp.MustCompile("([`\"'])(/assets/[^`\"'<>\\s]+)([`\"'])")
+
+// rewritePreviewResponse rewrites absolute paths in HTML and JavaScript responses to
+// include the preview prefix so that assets and navigation work correctly.
 func rewritePreviewResponse(resp *http.Response, prefix string) error {
 	// Prevent caching of all preview responses so that browsers always fetch
 	// fresh content with the correct preview-prefixed paths.
 	resp.Header.Set("Cache-Control", "no-store")
 
 	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "text/html") {
+	isHTML := strings.HasPrefix(ct, "text/html")
+	isJS := strings.HasPrefix(ct, "application/javascript") || strings.HasPrefix(ct, "text/javascript")
+
+	if !isHTML && !isJS {
 		return nil
 	}
 
@@ -422,24 +430,32 @@ func rewritePreviewResponse(resp *http.Response, prefix string) error {
 		return err
 	}
 
-	// Rewrite absolute paths in single-URL HTML attributes (src, href, action).
-	rewritten := previewAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}"))
+	var rewritten []byte
+	if isHTML {
+		// Rewrite absolute paths in single-URL HTML attributes (src, href, action).
+		rewritten = previewAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}"))
 
-	// Rewrite absolute paths within srcset attribute values. The browser
-	// prefers srcset over src for responsive images, so every URL entry inside
-	// the srcset must also be prefixed.
-	rewritten = previewSrcsetRe.ReplaceAllFunc(rewritten, func(match []byte) []byte {
-		parts := previewSrcsetRe.FindSubmatch(match)
-		if parts == nil {
-			return match
-		}
-		inner := previewAbsSrcURLRe.ReplaceAll(parts[2], []byte(prefix+"$1"))
-		out := make([]byte, 0, len(parts[1])+len(inner)+len(parts[3]))
-		out = append(out, parts[1]...)
-		out = append(out, inner...)
-		out = append(out, parts[3]...)
-		return out
-	})
+		// Rewrite absolute paths within srcset attribute values. The browser
+		// prefers srcset over src for responsive images, so every URL entry inside
+		// the srcset must also be prefixed.
+		rewritten = previewSrcsetRe.ReplaceAllFunc(rewritten, func(match []byte) []byte {
+			parts := previewSrcsetRe.FindSubmatch(match)
+			if parts == nil {
+				return match
+			}
+			inner := previewAbsSrcURLRe.ReplaceAll(parts[2], []byte(prefix+"$1"))
+			out := make([]byte, 0, len(parts[1])+len(inner)+len(parts[3]))
+			out = append(out, parts[1]...)
+			out = append(out, inner...)
+			out = append(out, parts[3]...)
+			return out
+		})
+	} else {
+		// For JavaScript, rewrite /assets/ string literals. Vite and similar
+		// bundlers embed asset paths as plain string literals; rewriting them
+		// here means the JS never makes a request to the wrong origin.
+		rewritten = previewJSAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}${3}"))
+	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
