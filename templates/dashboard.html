@@ -325,7 +325,7 @@ function renderSites() {
             : '';
           return `
           <div class="card" id="site-${site.name}">
-            <h2><a href="https://${site.name}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
+            <h2><a href="${site.enabled ? `https://${site.name}` : `/preview/${encodeURIComponent(site.name)}/`}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
             <div class="badges">
               <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
               ${wwwBadge}

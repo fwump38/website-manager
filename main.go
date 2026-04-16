@@ -98,6 +98,9 @@ func main() {
 		}
 		http.NotFound(w, r)
 	}))
+	mux.HandleFunc("/preview/", func(w http.ResponseWriter, r *http.Request) {
+		handlePreview(state, cfg.SitesDir, w, r)
+	})
 	mux.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

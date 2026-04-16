@@ -137,6 +137,11 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	}
 	allSites := state.AllSiteNames()
 
+	// Capture previously managed sites BEFORE modifying HasDNS flags so that
+	// reconcileIngress can identify (and remove) tunnel rules for sites that
+	// are being disabled in this reconciliation pass.
+	previouslyManagedSites := state.DNSManagedSites()
+
 	// Ensure DNS for each enabled site and its derived hostnames (e.g. www variant).
 	// HasDNS is tracked on the base site name only so it survives directory sync.
 	for _, site := range enabledSites {
@@ -153,7 +158,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	}
 
 	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
-	for _, site := range state.DNSManagedSites() {
+	for _, site := range previouslyManagedSites {
 		if !enabledMap[site] {
 			for _, hostname := range c.getManagedHostnames([]string{site}, allSites) {
 				c.logger.Printf("Deleting DNS for %s", hostname)
@@ -169,7 +174,6 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	}
 
 	c.logger.Printf("Reconciling tunnel ingress")
-	previouslyManagedSites := state.DNSManagedSites()
 	if err := c.reconcileIngress(ctx, enabledSites, allSites, previouslyManagedSites); err != nil {
 		return err
 	}

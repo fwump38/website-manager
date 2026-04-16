@@ -309,3 +309,92 @@ func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *Cloudf
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(view)
 }
+
+func handlePreview(state *State, sitesDir string, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract site name: /preview/<sitename>/optional/path
+	rest := strings.TrimPrefix(r.URL.Path, "/preview/")
+	if rest == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	// The site name is the first path segment (e.g. "blog.example.com").
+	var siteName, filePath string
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		siteName = rest[:idx]
+		filePath = rest[idx:] // includes leading /
+	} else {
+		siteName = rest
+		filePath = "/"
+	}
+
+	decodedSite, err := url.PathUnescape(siteName)
+	if err != nil {
+		http.Error(w, "invalid site name", http.StatusBadRequest)
+		return
+	}
+
+	// Only allow previews for sites registered in state.
+	known := false
+	for _, name := range state.AllSiteNames() {
+		if name == decodedSite {
+			known = true
+			break
+		}
+	}
+	if !known {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Path-traversal guard: resolved path must be strictly under sitesDir.
+	safeBase := filepath.Clean(sitesDir)
+	siteRoot := filepath.Join(safeBase, decodedSite)
+	if siteRoot == safeBase || !strings.HasPrefix(siteRoot, safeBase+string(filepath.Separator)) {
+		http.Error(w, "invalid site path", http.StatusBadRequest)
+		return
+	}
+
+	// Block dotfiles.
+	for _, seg := range strings.Split(filePath, "/") {
+		if strings.HasPrefix(seg, ".") && seg != "." && seg != "" {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// try_files: {path}, {path}.html, {path}/index.html (mirrors Caddy config).
+	cleanPath := filepath.Clean(filePath)
+	candidates := []string{
+		filepath.Join(siteRoot, cleanPath),
+		filepath.Join(siteRoot, cleanPath+".html"),
+		filepath.Join(siteRoot, cleanPath, "index.html"),
+	}
+
+	var resolved string
+	for _, c := range candidates {
+		abs := filepath.Clean(c)
+		if !strings.HasPrefix(abs, siteRoot+string(filepath.Separator)) && abs != siteRoot {
+			continue // traversal attempt
+		}
+		info, err := os.Stat(abs)
+		if err == nil && !info.IsDir() {
+			resolved = abs
+			break
+		}
+	}
+	if resolved == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	http.ServeFile(w, r, resolved)
+}
