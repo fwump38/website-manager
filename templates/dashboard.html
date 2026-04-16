@@ -127,6 +127,16 @@ dialog h2 { margin: 0 0 20px; font-size: 1.3rem; }
   </div>
 </dialog>
 
+<!-- Delete Confirm Modal -->
+<dialog id="confirmDeleteDialog" aria-labelledby="deleteConfirmTitle">
+  <h2 id="deleteConfirmTitle">Delete Site</h2>
+  <p class="confirm-body">Permanently delete <span class="confirm-name" id="deleteSiteName"></span>? This removes the site folder and all its contents and <strong>cannot be undone</strong>.</p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="cancelDelete" type="button">Cancel</button>
+    <button class="btn-danger" id="submitDelete" type="button">Delete Permanently</button>
+  </div>
+</dialog>
+
 <!-- New Site Modal -->
 <dialog id="newSiteDialog" aria-labelledby="dialogTitle">
   <h2 id="dialogTitle">Create New Site</h2>
@@ -169,6 +179,10 @@ const confirmDisableDialog = document.getElementById('confirmDisableDialog');
 const confirmSiteName = document.getElementById('confirmSiteName');
 const cancelDisable = document.getElementById('cancelDisable');
 const submitDisable = document.getElementById('submitDisable');
+const confirmDeleteDialog = document.getElementById('confirmDeleteDialog');
+const deleteSiteNameEl = document.getElementById('deleteSiteName');
+const cancelDelete = document.getElementById('cancelDelete');
+const submitDelete = document.getElementById('submitDelete');
 
 refreshButton.addEventListener('click', fetchSites);
 
@@ -229,6 +243,7 @@ function renderSites(sites) {
       </div>
       <div class="toggle">
         <button class="${toggleBtnClass}" data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${toggleBtnLabel}</button>
+        ${!site.enabled ? `<button class="btn-danger" data-delete-site="${encodeURIComponent(site.name)}">Delete</button>` : ''}
         <span class="hint">${hint}</span>
       </div>
     </div>`;
@@ -241,6 +256,12 @@ function renderSites(sites) {
       } else {
         toggleSite(button);
       }
+    });
+  });
+
+  grid.querySelectorAll('button[data-delete-site]').forEach(button => {
+    button.addEventListener('click', () => {
+      openDeleteConfirm(decodeURIComponent(button.dataset.deleteSite));
     });
   });
 }
@@ -299,6 +320,55 @@ submitDisable.addEventListener('click', async () => {
   await toggleSite(pendingDisableButton);
   pendingDisableButton = null;
 });
+
+// ── Delete confirm modal ──────────────────────────────────────────────────
+
+let pendingDeleteSite = null;
+
+function openDeleteConfirm(siteName) {
+  pendingDeleteSite = siteName;
+  deleteSiteNameEl.textContent = siteName;
+  confirmDeleteDialog.showModal();
+}
+
+cancelDelete.addEventListener('click', () => {
+  confirmDeleteDialog.close();
+  pendingDeleteSite = null;
+});
+
+confirmDeleteDialog.addEventListener('click', e => {
+  const rect = confirmDeleteDialog.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right ||
+      e.clientY < rect.top  || e.clientY > rect.bottom) {
+    confirmDeleteDialog.close();
+    pendingDeleteSite = null;
+  }
+});
+
+submitDelete.addEventListener('click', async () => {
+  if (!pendingDeleteSite) return;
+  confirmDeleteDialog.close();
+  const name = pendingDeleteSite;
+  pendingDeleteSite = null;
+  await deleteSite(name);
+});
+
+async function deleteSite(siteName) {
+  try {
+    const res = await fetch(`/api/sites/${encodeURIComponent(siteName)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to delete site.');
+      return;
+    }
+    showToast(`${siteName} deleted.`);
+    await fetchSites();
+  } catch (err) {
+    showToast(err.message);
+  }
+}
 
 async function toggleSite(button) {
   const siteName = decodeURIComponent(button.dataset.site);

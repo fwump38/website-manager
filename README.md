@@ -108,6 +108,7 @@ The dashboard is backed by a small REST API:
 | `GET` | `/api/sites` | List all discovered sites and their state. |
 | `POST` | `/api/sites` | Create a new site from a template. Body: `{"subdomain":"blog","domain":"example.com","template":"static-html"}` |
 | `PATCH` | `/api/sites/:name` | Enable or disable a site. Body: `{"enabled":true}` |
+| `DELETE` | `/api/sites/:name` | Delete a disabled site and permanently remove its folder and all contents. |
 | `GET` | `/api/domains` | List domains available from the configured zone map. |
 | `GET` | `/api/dns-check?site=:name` | Check whether a site's DNS is resolving via Cloudflare's `1.1.1.1` resolver. |
 | `GET` | `/health` | Health check — returns `200 ok`. |

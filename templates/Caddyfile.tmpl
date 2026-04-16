@@ -5,7 +5,7 @@
 
 {{- if .Sites}}
 {{- range .Sites}}
-{{.Name}} {
+http://{{.Name}} {
     root * {{$.SitesDir}}/{{.Name}}
 
     file_server {

@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -143,6 +145,68 @@ func handleDomains(cfClient *CloudflareClient, w http.ResponseWriter, r *http.Re
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(domains)
+}
+
+func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfReconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+	if name == "" {
+		http.Error(w, "site name required", http.StatusBadRequest)
+		return
+	}
+	decodedName, err := url.PathUnescape(name)
+	if err != nil {
+		http.Error(w, "invalid site name", http.StatusBadRequest)
+		return
+	}
+
+	// Guard: site must exist in state and be disabled.
+	found := false
+	for _, sv := range state.AllSites() {
+		if sv.Name == decodedName {
+			found = true
+			if sv.Enabled {
+				jsonError(w, "site must be disabled before deleting", http.StatusConflict)
+				return
+			}
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "site not found", http.StatusNotFound)
+		return
+	}
+
+	// Build the site path and verify it is strictly under sitesDir (path traversal guard).
+	safeBase := filepath.Clean(sitesDir)
+	sitePath := filepath.Join(safeBase, decodedName)
+	if sitePath == safeBase || !strings.HasPrefix(sitePath, safeBase+string(filepath.Separator)) {
+		logger.Printf("delete site: computed path %q is outside sitesDir %q", sitePath, safeBase)
+		http.Error(w, "invalid site path", http.StatusBadRequest)
+		return
+	}
+
+	// Remove from state first, then delete the folder.
+	state.RemoveSite(decodedName)
+	if err := state.Save(stateFile); err != nil {
+		logger.Printf("failed to save state after removing site %q: %v", decodedName, err)
+		http.Error(w, "failed to save state", http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.RemoveAll(sitePath); err != nil {
+		logger.Printf("failed to delete site directory %q: %v", sitePath, err)
+		jsonError(w, "failed to delete site directory", http.StatusInternalServerError)
+		return
+	}
+
+	sendReconcile(reconcileCh)
+	sendReconcile(cfReconcileCh)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {

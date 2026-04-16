@@ -115,7 +115,14 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
-		handleSitePatch(state, cfg.StateFile, reconcileCh, cfReconcileCh, w, r)
+		switch r.Method {
+		case http.MethodPatch:
+			handleSitePatch(state, cfg.StateFile, reconcileCh, cfReconcileCh, w, r)
+		case http.MethodDelete:
+			handleDeleteSite(state, cfg.StateFile, cfg.SitesDir, reconcileCh, cfReconcileCh, logger, w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
 		handleDomains(cfClient, w, r)
