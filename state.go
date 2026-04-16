@@ -5,13 +5,11 @@ import (
 	"os"
 	"sort"
 	"sync"
-	"time"
 )
 
 type SiteInfo struct {
-	Enabled      bool      `json:"enabled"`
-	DiscoveredAt time.Time `json:"discovered_at"`
-	HasDNS       bool      `json:"has_dns,omitempty"`
+	Enabled bool `json:"enabled"`
+	HasDNS  bool `json:"has_dns,omitempty"`
 }
 
 type State struct {
@@ -20,9 +18,10 @@ type State struct {
 }
 
 type SiteView struct {
-	Name         string    `json:"name"`
-	Enabled      bool      `json:"enabled"`
-	DiscoveredAt time.Time `json:"discovered_at"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	HasDNS  bool   `json:"has_dns,omitempty"`
+	HasWWW  bool   `json:"has_www,omitempty"`
 }
 
 func LoadState(path string) (*State, error) {
@@ -75,8 +74,7 @@ func (s *State) AddSite(site string) {
 		return
 	}
 	s.Sites[site] = SiteInfo{
-		Enabled:      false,
-		DiscoveredAt: time.Now().UTC(),
+		Enabled: false,
 	}
 }
 
@@ -89,10 +87,7 @@ func (s *State) RemoveSite(site string) {
 func (s *State) SetEnabled(site string, enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info, ok := s.Sites[site]
-	if !ok {
-		info.DiscoveredAt = time.Now().UTC()
-	}
+	info := s.Sites[site]
 	info.Enabled = enabled
 	s.Sites[site] = info
 }
@@ -147,7 +142,7 @@ func (s *State) AllSites() []SiteView {
 	defer s.mu.RUnlock()
 	var output []SiteView
 	for name, info := range s.Sites {
-		output = append(output, SiteView{Name: name, Enabled: info.Enabled, DiscoveredAt: info.DiscoveredAt})
+		output = append(output, SiteView{Name: name, Enabled: info.Enabled, HasDNS: info.HasDNS})
 	}
 	sort.Slice(output, func(i, j int) bool {
 		return output[i].Name < output[j].Name

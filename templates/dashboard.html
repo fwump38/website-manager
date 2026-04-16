@@ -13,38 +13,181 @@ h1 { margin: 0; font-size: 2rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .card { background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.12); }
 .card h2 { margin: 0 0 12px; font-size: 1.1rem; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .badge { display: inline-flex; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; letter-spacing: 0.02em; }
 .badge.enabled { background: #10b981; color: #ecfccb; }
 .badge.disabled { background: #6b7280; color: #f3f4f6; }
+.badge.www { background: #6366f1; color: #e0e7ff; }
+.badge.live { background: #0ea5e9; color: #e0f2fe; }
+.badge.checking { background: #374151; color: #9ca3af; }
 .toggle { display: inline-flex; align-items: center; gap: 12px; margin-top: 20px; }
+.header-actions { display: flex; gap: 8px; }
 button { background: #2563eb; color: white; border: none; border-radius: 999px; padding: 12px 18px; cursor: pointer; transition: background 0.2s ease; }
 button:disabled { opacity: 0.5; cursor: default; }
 button:hover:not(:disabled) { background: #1d4ed8; }
+.btn-secondary { background: #374151; }
+.btn-secondary:hover:not(:disabled) { background: #4b5563; }
+.btn-danger { background: #dc2626; }
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #d1d5db; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); }}
+
+/* Modals */
+dialog {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 16px;
+  padding: 28px;
+  color: #f9fafb;
+  width: 100%;
+  max-width: 440px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+dialog::backdrop { background: rgba(0,0,0,0.6); }
+dialog h2 { margin: 0 0 20px; font-size: 1.3rem; }
+.form-field { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; }
+.form-field label { font-size: 0.875rem; color: #d1d5db; font-weight: 500; }
+.form-field input, .form-field select {
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  color: #f9fafb;
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-field input:focus, .form-field select:focus { border-color: #2563eb; }
+.form-field select option { background: #1f2937; }
+.site-preview {
+  font-size: 0.85rem;
+  color: #9ca3af;
+  min-height: 1.2em;
+  margin-top: 4px;
+}
+.form-error { color: #f87171; font-size: 0.875rem; min-height: 1.2em; margin: 8px 0 0; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+.confirm-body { color: #d1d5db; margin: 0 0 4px; }
+.confirm-name { font-weight: 600; color: #f9fafb; word-break: break-all; }
+
+/* Toast */
+#toastContainer {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 1000;
+  pointer-events: none;
+}
+.toast {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-left: 4px solid #0ea5e9;
+  border-radius: 10px;
+  padding: 12px 18px;
+  color: #f9fafb;
+  font-size: 0.9rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  opacity: 0;
+  transform: translateY(8px);
+  animation: toastIn 0.3s ease forwards, toastOut 0.4s ease 3.6s forwards;
+  max-width: 320px;
+}
+@keyframes toastIn  { to { opacity: 1; transform: translateY(0); } }
+@keyframes toastOut { to { opacity: 0; transform: translateY(8px); } }
 </style>
 </head>
 <body>
 <div class="container">
-<header>
-<div>
-<h1>Site Manager</h1>
-<p class="status" id="status">Loading sites…</p>
+  <header>
+    <div>
+      <h1>Site Manager</h1>
+      <p class="status" id="status">Loading sites…</p>
+    </div>
+    <div class="header-actions">
+      <button id="newSite">New Site</button>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+  <div class="grid" id="siteGrid"></div>
 </div>
-<div><button id="refresh">Refresh</button></div>
-</header>
-<div class="grid" id="siteGrid"></div>
-</div>
+
+<!-- Toast container -->
+<div id="toastContainer" role="status" aria-live="polite"></div>
+
+<!-- Disable Confirm Modal -->
+<dialog id="confirmDisableDialog" aria-labelledby="confirmTitle">
+  <h2 id="confirmTitle">Disable Site</h2>
+  <p class="confirm-body">Are you sure you want to disable <span class="confirm-name" id="confirmSiteName"></span>? This will remove it from Cloudflare and Caddy.</p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="cancelDisable" type="button">Cancel</button>
+    <button class="btn-danger" id="submitDisable" type="button">Disable</button>
+  </div>
+</dialog>
+
+<!-- New Site Modal -->
+<dialog id="newSiteDialog" aria-labelledby="dialogTitle">
+  <h2 id="dialogTitle">Create New Site</h2>
+  <div class="form-field">
+    <label for="domainSelect">Domain</label>
+    <select id="domainSelect"></select>
+  </div>
+  <div class="form-field">
+    <label for="subdomainInput">Subdomain <span style="color:#6b7280;font-weight:400">(optional — leave blank for apex domain)</span></label>
+    <input type="text" id="subdomainInput" placeholder="e.g. blog" autocomplete="off" spellcheck="false" />
+    <span class="site-preview" id="sitePreview"></span>
+  </div>
+  <div class="form-field">
+    <label for="templateSelect">Template</label>
+    <select id="templateSelect">
+      <option value="static-html">Static HTML</option>
+    </select>
+  </div>
+  <p class="form-error" id="modalError" role="alert"></p>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="cancelCreate" type="button">Cancel</button>
+    <button id="submitCreate" type="button">Create Site</button>
+  </div>
+</dialog>
+
 <script>
 const statusEl = document.getElementById('status');
 const grid = document.getElementById('siteGrid');
 const refreshButton = document.getElementById('refresh');
+const newSiteButton = document.getElementById('newSite');
+const dialog = document.getElementById('newSiteDialog');
+const domainSelect = document.getElementById('domainSelect');
+const subdomainInput = document.getElementById('subdomainInput');
+const sitePreview = document.getElementById('sitePreview');
+const templateSelect = document.getElementById('templateSelect');
+const modalError = document.getElementById('modalError');
+const cancelCreate = document.getElementById('cancelCreate');
+const submitCreate = document.getElementById('submitCreate');
+const confirmDisableDialog = document.getElementById('confirmDisableDialog');
+const confirmSiteName = document.getElementById('confirmSiteName');
+const cancelDisable = document.getElementById('cancelDisable');
+const submitDisable = document.getElementById('submitDisable');
 
 refreshButton.addEventListener('click', fetchSites);
 
-function formatDate(value) {
-  return new Date(value).toLocaleString();
+// ── Toast ──────────────────────────────────────────────────────────────────
+
+const toastContainer = document.getElementById('toastContainer');
+const shownToasts = new Set();
+
+function showToast(message) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  toastContainer.appendChild(el);
+  el.addEventListener('animationend', e => {
+    if (e.animationName === 'toastOut') el.remove();
+  });
 }
+
+// ── Site grid ──────────────────────────────────────────────────────────────
 
 async function fetchSites() {
   statusEl.textContent = 'Loading sites…';
@@ -55,6 +198,8 @@ async function fetchSites() {
     const sites = await res.json();
     renderSites(sites);
     statusEl.textContent = `${sites.length} site${sites.length === 1 ? '' : 's'} discovered`;
+    // Kick off DNS checks for enabled sites.
+    sites.filter(s => s.enabled).forEach(s => checkDNS(s.name));
   } catch (err) {
     statusEl.textContent = err.message;
   }
@@ -65,21 +210,95 @@ function renderSites(sites) {
     grid.innerHTML = '<p>No sites discovered yet. Create a new directory in the mounted sites folder.</p>';
     return;
   }
-  grid.innerHTML = sites.map(site => `
+  grid.innerHTML = sites.map(site => {
+    const toggleBtnClass = site.enabled ? 'btn-danger' : '';
+    const toggleBtnLabel = site.enabled ? 'Disable' : 'Enable';
+    const hint = site.enabled ? 'Live on Cloudflare + Caddy' : 'Not published yet';
+    const wwwBadge = site.has_www ? '<span class="badge www">www</span>' : '';
+    const liveBadgeId = `dns-badge-${CSS.escape(site.name)}`;
+    const liveBadge = site.enabled
+      ? `<span class="badge checking" id="${liveBadgeId}">Checking DNS…</span>`
+      : '';
+    return `
     <div class="card" id="site-${site.name}">
       <h2>${site.name}</h2>
-      <div class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</div>
-      <p style="margin-top: 12px; color: #d1d5db;">Discovered: ${formatDate(site.discovered_at)}</p>
-      <div class="toggle">
-        <button data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${site.enabled ? 'Disable' : 'Enable'}</button>
-        <span class="hint">${site.enabled ? 'Live on Cloudflare + Caddy' : 'Not published yet'}</span>
+      <div class="badges">
+        <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
+        ${wwwBadge}
+        ${liveBadge}
       </div>
-    </div>`).join('');
+      <div class="toggle">
+        <button class="${toggleBtnClass}" data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${toggleBtnLabel}</button>
+        <span class="hint">${hint}</span>
+      </div>
+    </div>`;
+  }).join('');
 
   grid.querySelectorAll('button[data-site]').forEach(button => {
-    button.addEventListener('click', () => toggleSite(button));
+    button.addEventListener('click', () => {
+      if (button.dataset.enabled === 'true') {
+        openDisableConfirm(button);
+      } else {
+        toggleSite(button);
+      }
+    });
   });
 }
+
+async function checkDNS(siteName) {
+  const badgeEl = document.getElementById(`dns-badge-${CSS.escape(siteName)}`);
+  if (!badgeEl) return;
+  try {
+    const res = await fetch(`/api/dns-check?site=${encodeURIComponent(siteName)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.live) {
+      badgeEl.textContent = 'Live';
+      badgeEl.className = 'badge live';
+      if (!shownToasts.has(siteName)) {
+        shownToasts.add(siteName);
+        showToast(`${siteName} is live — DNS is resolving correctly.`);
+      }
+    } else {
+      badgeEl.textContent = 'DNS pending';
+      badgeEl.className = 'badge checking';
+    }
+  } catch {
+    badgeEl.remove();
+  }
+}
+
+// ── Disable confirm modal ─────────────────────────────────────────────────
+
+let pendingDisableButton = null;
+
+function openDisableConfirm(button) {
+  pendingDisableButton = button;
+  const siteName = decodeURIComponent(button.dataset.site);
+  confirmSiteName.textContent = siteName;
+  confirmDisableDialog.showModal();
+}
+
+cancelDisable.addEventListener('click', () => {
+  confirmDisableDialog.close();
+  pendingDisableButton = null;
+});
+
+confirmDisableDialog.addEventListener('click', e => {
+  const rect = confirmDisableDialog.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right ||
+      e.clientY < rect.top  || e.clientY > rect.bottom) {
+    confirmDisableDialog.close();
+    pendingDisableButton = null;
+  }
+});
+
+submitDisable.addEventListener('click', async () => {
+  if (!pendingDisableButton) return;
+  confirmDisableDialog.close();
+  await toggleSite(pendingDisableButton);
+  pendingDisableButton = null;
+});
 
 async function toggleSite(button) {
   const siteName = decodeURIComponent(button.dataset.site);
@@ -104,7 +323,102 @@ async function toggleSite(button) {
   }
 }
 
+// ── Domain availability + New Site button ──────────────────────────────────
+
+async function initDomains() {
+  try {
+    const res = await fetch('/api/domains');
+    if (!res.ok) throw new Error('could not fetch domains');
+    const domains = await res.json();
+    if (!domains || domains.length === 0) {
+      newSiteButton.disabled = true;
+      newSiteButton.title = 'No domains configured — set CF_ZONE_MAP or CF_ZONE_ID to enable site creation';
+    } else {
+      domainSelect.innerHTML = domains.map(d => `<option value="${d}">${d}</option>`).join('');
+    }
+  } catch {
+    newSiteButton.disabled = true;
+    newSiteButton.title = 'Could not load domain list';
+  }
+}
+
+// ── New Site Modal ─────────────────────────────────────────────────────────
+
+newSiteButton.addEventListener('click', () => {
+  subdomainInput.value = '';
+  sitePreview.textContent = '';
+  modalError.textContent = '';
+  submitCreate.disabled = false;
+  dialog.showModal();
+});
+
+cancelCreate.addEventListener('click', () => dialog.close());
+
+// Close on backdrop click.
+dialog.addEventListener('click', e => {
+  const rect = dialog.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right ||
+      e.clientY < rect.top  || e.clientY > rect.bottom) {
+    dialog.close();
+  }
+});
+
+// Live preview of computed site name.
+function computeSiteName() {
+  const subdomain = subdomainInput.value.trim().toLowerCase();
+  const domain = domainSelect.value;
+  if (!domain) return '';
+  return subdomain ? `${subdomain}.${domain}` : domain;
+}
+
+subdomainInput.addEventListener('input', () => {
+  const name = computeSiteName();
+  sitePreview.textContent = name ? `→ ${name}` : '';
+});
+
+domainSelect.addEventListener('change', () => {
+  const name = computeSiteName();
+  sitePreview.textContent = name ? `→ ${name}` : '';
+});
+
+submitCreate.addEventListener('click', async () => {
+  modalError.textContent = '';
+
+  const subdomain = subdomainInput.value.trim().toLowerCase();
+  const domain = domainSelect.value;
+  const template = templateSelect.value;
+
+  // Client-side subdomain format check.
+  if (subdomain && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(subdomain)) {
+    modalError.textContent = 'Invalid subdomain: use lowercase letters, numbers, and hyphens only (no leading/trailing hyphens).';
+    return;
+  }
+
+  submitCreate.disabled = true;
+  try {
+    const res = await fetch('/api/sites', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subdomain, domain, template })
+    });
+    if (res.status === 201) {
+      dialog.close();
+      await fetchSites();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      modalError.textContent = data.error || 'Failed to create site.';
+    }
+  } catch (err) {
+    modalError.textContent = err.message;
+  } finally {
+    submitCreate.disabled = false;
+  }
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────
+
 fetchSites();
+initDomains();
 </script>
 </body>
 </html>

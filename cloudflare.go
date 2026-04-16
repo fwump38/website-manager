@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/cloudflare/cloudflare-go/v6"
@@ -73,6 +74,27 @@ func parseZoneMap(rawMap, zoneID, zoneDomain string) (map[string]string, error) 
 		zones[domain] = strings.TrimSpace(zoneID)
 	}
 	return zones, nil
+}
+
+// HasWWWForSite reports whether the www redirect is enabled for the given site
+// name. This is true only for apex domains when EnableWWWRedirect is on.
+func (c *CloudflareClient) HasWWWForSite(siteName string) bool {
+	if !c.cfg.EnableWWWRedirect || strings.HasPrefix(siteName, "www.") {
+		return false
+	}
+	_, isApex := c.cfg.ZoneMap[strings.ToLower(siteName)]
+	return isApex
+}
+
+// AvailableDomains returns the sorted list of domain names this client has
+// zone access to (i.e. the keys of the configured zone map).
+func (c *CloudflareClient) AvailableDomains() []string {
+	domains := make([]string, 0, len(c.cfg.ZoneMap))
+	for domain := range c.cfg.ZoneMap {
+		domains = append(domains, domain)
+	}
+	sort.Strings(domains)
+	return domains
 }
 
 func (c *CloudflareClient) zoneIDForHostname(hostname string) (string, bool) {

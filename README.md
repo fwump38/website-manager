@@ -25,8 +25,6 @@ CF_ZONE_DOMAIN=example.com
 
 If you use `CF_ZONE_MAP`, then `CF_ZONE_ID` and `CF_ZONE_DOMAIN` are not required.
 
-The tunnel hostname is derived automatically from `CF_TUNNEL_ID` as `<tunnel-id>.cfargotunnel.com`, so `CF_TUNNEL_HOSTNAME` is not required unless you need a custom host value.
-
 2. Run with Docker Compose:
 
 ```bash

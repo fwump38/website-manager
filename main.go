@@ -83,6 +83,7 @@ func main() {
 	}
 
 	reconcileCh := make(chan struct{}, 1)
+	cfReconcileCh := make(chan struct{}, 1)
 	cfClient := NewCloudflareClient(cfg, logger)
 	caddy := &CaddyManager{
 		SitesDir:     cfg.SitesDir,
@@ -104,10 +105,23 @@ func main() {
 		http.NotFound(w, r)
 	}))
 	mux.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
-		handleSites(state, cfg.StateFile, reconcileCh, w, r)
+		switch r.Method {
+		case http.MethodGet:
+			handleSites(state, cfg.StateFile, reconcileCh, cfClient, w, r)
+		case http.MethodPost:
+			handleCreateSite(state, cfg.StateFile, cfg.SitesDir, cfClient, reconcileCh, logger, w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 	mux.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
-		handleSitePatch(state, cfg.StateFile, reconcileCh, w, r)
+		handleSitePatch(state, cfg.StateFile, reconcileCh, cfReconcileCh, w, r)
+	})
+	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
+		handleDomains(cfClient, w, r)
+	})
+	mux.HandleFunc("/api/dns-check", func(w http.ResponseWriter, r *http.Request) {
+		handleDNSCheck(state, w, r)
 	})
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -141,7 +155,9 @@ func main() {
 		for {
 			select {
 			case <-reconcileCh:
-				reconcileOnce(state, cfg, caddy, cfClient, logger)
+				reconcileCaddy(state, cfg, caddy, logger)
+			case <-cfReconcileCh:
+				reconcileCloudflare(state, cfg, cfClient, logger)
 			case <-signalCtx.Done():
 				return
 			}
@@ -158,6 +174,11 @@ func main() {
 }
 
 func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
+	reconcileCaddy(state, cfg, caddy, logger)
+	reconcileCloudflare(state, cfg, cf, logger)
+}
+
+func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, logger *log.Logger) {
 	enabledSites := state.EnabledSites()
 	if err := caddy.GenerateCaddyfile(enabledSites); err != nil {
 		logger.Printf("failed to generate caddyfile: %v", err)
@@ -165,12 +186,15 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 	}
 	if err := caddy.Reload(); err != nil {
 		logger.Printf("failed to reload caddy: %v", err)
-		return
 	}
+}
+
+func reconcileCloudflare(state *State, cfg Config, cf *CloudflareClient, logger *log.Logger) {
 	if cfg.CFAPIToken == "" || cfg.CFAccountID == "" || cfg.CFTunnelID == "" || (cfg.CFZoneID == "" && cfg.CFZoneMap == "") || cfg.CFTunnelHost == "" {
 		logger.Println("cloudflare configuration incomplete, skipping Cloudflare sync")
 		return
 	}
+	enabledSites := state.EnabledSites()
 	if err := cf.Reconcile(state, cfg.StateFile, enabledSites); err != nil {
 		logger.Printf("failed to reconcile cloudflare: %v", err)
 	}

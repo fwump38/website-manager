@@ -1,29 +1,81 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"time"
 )
 
 type patchRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-func handleSites(state *State, stateFile string, reconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
+func handleSites(state *State, stateFile string, reconcileCh chan<- struct{}, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	sites := state.AllSites()
+	for i := range sites {
+		if sites[i].Enabled && sites[i].HasDNS {
+			sites[i].HasWWW = cfClient.HasWWWForSite(sites[i].Name)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(sites)
 }
 
-func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
+// handleDNSCheck resolves a site hostname using an external public resolver
+// and reports whether the domain has live DNS. Only sites known to the state
+// are permitted to prevent arbitrary DNS lookups.
+func handleDNSCheck(state *State, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	site := r.URL.Query().Get("site")
+	if site == "" {
+		jsonError(w, "site query param required", http.StatusBadRequest)
+		return
+	}
+	// Only allow lookups for sites registered in state.
+	known := false
+	for _, name := range state.AllSiteNames() {
+		if name == site {
+			known = true
+			break
+		}
+	}
+	if !known {
+		jsonError(w, "site not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"live": dnsIsLive(site)})
+}
+
+func dnsIsLive(hostname string) bool {
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			return d.DialContext(ctx, "udp", "1.1.1.1:53")
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := r.LookupHost(ctx, hostname)
+	return err == nil && len(addrs) > 0
+}
+
+func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}, cfReconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -60,5 +112,136 @@ func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}
 		return
 	}
 	sendReconcile(reconcileCh)
+	sendReconcile(cfReconcileCh)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// subdomainRe validates a normalised subdomain label: lowercase alphanumeric
+// with interior hyphens allowed, no leading/trailing hyphens.
+var subdomainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+type createSiteRequest struct {
+	Subdomain string `json:"subdomain"`
+	Domain    string `json:"domain"`
+	Template  string `json:"template"`
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func handleDomains(cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	domains := cfClient.AvailableDomains()
+	if domains == nil {
+		domains = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(domains)
+}
+
+func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonError(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var payload createSiteRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		jsonError(w, "invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// Validate domain.
+	if payload.Domain == "" {
+		jsonError(w, "domain is required", http.StatusBadRequest)
+		return
+	}
+	validDomains := cfClient.AvailableDomains()
+	domainValid := false
+	for _, d := range validDomains {
+		if d == payload.Domain {
+			domainValid = true
+			break
+		}
+	}
+	if !domainValid {
+		jsonError(w, "domain is not in the configured zone map", http.StatusBadRequest)
+		return
+	}
+
+	// Validate template.
+	if payload.Template == "" {
+		jsonError(w, "template is required", http.StatusBadRequest)
+		return
+	}
+	templateValid := false
+	for _, t := range availableTemplates {
+		if t == payload.Template {
+			templateValid = true
+			break
+		}
+	}
+	if !templateValid {
+		jsonError(w, "unknown template", http.StatusBadRequest)
+		return
+	}
+
+	// Normalise and validate subdomain.
+	subdomain := strings.ToLower(strings.TrimSpace(payload.Subdomain))
+	if subdomain != "" && !subdomainRe.MatchString(subdomain) {
+		jsonError(w, "invalid subdomain: use lowercase letters, numbers, and hyphens only (no leading/trailing hyphens)", http.StatusBadRequest)
+		return
+	}
+
+	// Build the site name (e.g. "blog.example.com" or "example.com").
+	siteName := payload.Domain
+	if subdomain != "" {
+		siteName = subdomain + "." + payload.Domain
+	}
+
+	// Check for duplicates.
+	for _, existing := range state.AllSiteNames() {
+		if existing == siteName {
+			jsonError(w, "site already exists", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Create the site folder from the template.
+	if err := createSiteFromTemplate(sitesDir, siteName, payload.Template, logger); err != nil {
+		logger.Printf("failed to create site %q from template: %v", siteName, err)
+		jsonError(w, "failed to create site folder", http.StatusInternalServerError)
+		return
+	}
+
+	// Register the site in state immediately (watcher will no-op on the
+	// existing directory when it fires shortly after).
+	state.AddSite(siteName)
+	if err := state.Save(stateFile); err != nil {
+		logger.Printf("failed to save state after creating site %q: %v", siteName, err)
+		jsonError(w, "site created but failed to save state", http.StatusInternalServerError)
+		return
+	}
+	sendReconcile(reconcileCh)
+
+	view := SiteView{
+		Name:    siteName,
+		Enabled: false,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(view)
 }
