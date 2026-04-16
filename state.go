@@ -3,9 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/user"
 	"sort"
-	"strconv"
 	"sync"
 )
 
@@ -15,8 +13,10 @@ type SiteInfo struct {
 }
 
 type State struct {
-	mu    sync.RWMutex
-	Sites map[string]SiteInfo `json:"sites"`
+	mu      sync.RWMutex
+	Sites   map[string]SiteInfo `json:"sites"`
+	FileUID int                 `json:"-"`
+	FileGID int                 `json:"-"`
 }
 
 type SiteView struct {
@@ -63,19 +63,15 @@ func SaveState(path string, s *State) error {
 	}
 
 	tempFile := path + ".tmp"
-	if err := os.WriteFile(tempFile, payload, 0o644); err != nil {
+	if err := os.WriteFile(tempFile, payload, 0o755); err != nil {
 		return err
 	}
 	if err := os.Rename(tempFile, path); err != nil {
 		return err
 	}
-	// Best-effort chown to nobody:users for Unraid compatibility.
-	if u, err := user.Lookup("nobody"); err == nil {
-		if g, err := user.LookupGroup("users"); err == nil {
-			uid, _ := strconv.Atoi(u.Uid)
-			gid, _ := strconv.Atoi(g.Gid)
-			_ = os.Chown(path, uid, gid)
-		}
+	// Best-effort chown using configured PUID/PGID (Unraid compatibility).
+	if s.FileUID != 0 || s.FileGID != 0 {
+		_ = os.Chown(path, s.FileUID, s.FileGID)
 	}
 	return nil
 }

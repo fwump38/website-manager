@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +26,17 @@ type Config struct {
 	CFTunnelHost        string
 	CFEnableWWWRedirect bool
 	TemplatesDir        string
+	FileUID             int
+	FileGID             int
+}
+
+func parseEnvInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
 }
 
 func loadConfig() Config {
@@ -41,6 +53,8 @@ func loadConfig() Config {
 		CFTunnelHost:        os.Getenv("CF_TUNNEL_HOSTNAME"),
 		CFEnableWWWRedirect: os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
 		TemplatesDir:        "templates",
+		FileUID:             parseEnvInt("PUID", 99),
+		FileGID:             parseEnvInt("PGID", 100),
 	}
 
 	if cfg.SitesDir == "" {
@@ -75,6 +89,8 @@ func main() {
 	if err != nil {
 		logger.Fatalf("failed to load state: %v", err)
 	}
+	state.FileUID = cfg.FileUID
+	state.FileGID = cfg.FileGID
 
 	reconcileCh := make(chan struct{}, 1)
 	cfReconcileCh := make(chan struct{}, 1)
@@ -106,7 +122,7 @@ func main() {
 		case http.MethodGet:
 			handleSites(state, cfg.StateFile, reconcileCh, cfClient, w, r)
 		case http.MethodPost:
-			handleCreateSite(state, cfg.StateFile, cfg.SitesDir, cfClient, reconcileCh, logger, w, r)
+			handleCreateSite(state, cfg.StateFile, cfg.SitesDir, cfClient, reconcileCh, cfg.FileUID, cfg.FileGID, logger, w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}

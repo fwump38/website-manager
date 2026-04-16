@@ -7,9 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 )
 
 //go:embed site-templates
@@ -17,11 +15,10 @@ var siteTemplatesFS embed.FS
 
 var availableTemplates = []string{"static-html"}
 
-func createSiteFromTemplate(sitesDir, siteName, templateName string, logger *log.Logger) error {
+func createSiteFromTemplate(sitesDir, siteName, templateName string, uid, gid int, logger *log.Logger) error {
 	siteRoot := filepath.Join(sitesDir, siteName)
 
-	// Determine nobody UID/GID for Unraid compatibility.
-	uid, gid, hasOwnership := resolveNobodyIDs(logger)
+	hasOwnership := uid != 0 || gid != 0
 
 	// Walk the embedded template and replicate it under siteRoot.
 	templateRoot := filepath.Join("site-templates", templateName)
@@ -103,29 +100,4 @@ func copyEmbeddedFile(src, dest string) error {
 	return err
 }
 
-// resolveNobodyIDs returns the UID and GID for the "nobody" user/group.
-// If lookup fails (e.g. macOS dev environment), hasOwnership is false and
-// chown operations are skipped.
-func resolveNobodyIDs(logger *log.Logger) (uid, gid int, hasOwnership bool) {
-	u, err := user.Lookup("nobody")
-	if err != nil {
-		logger.Printf("warning: could not look up 'nobody' user, skipping chown: %v", err)
-		return 0, 0, false
-	}
-	g, err := user.LookupGroup("users")
-	if err != nil {
-		logger.Printf("warning: could not look up 'users' group, skipping chown: %v", err)
-		return 0, 0, false
-	}
-	uidInt, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		logger.Printf("warning: invalid nobody UID %q, skipping chown: %v", u.Uid, err)
-		return 0, 0, false
-	}
-	gidInt, err := strconv.Atoi(g.Gid)
-	if err != nil {
-		logger.Printf("warning: invalid nobody GID %q, skipping chown: %v", g.Gid, err)
-		return 0, 0, false
-	}
-	return uidInt, gidInt, true
-}
+// resolveNobodyIDs is intentionally removed; use PUID/PGID env vars instead.

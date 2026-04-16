@@ -209,7 +209,7 @@ func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfR
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, fileUID, fileGID int, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -285,7 +285,7 @@ func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *Cloudf
 	}
 
 	// Create the site folder from the template.
-	if err := createSiteFromTemplate(sitesDir, siteName, payload.Template, logger); err != nil {
+	if err := createSiteFromTemplate(sitesDir, siteName, payload.Template, fileUID, fileGID, logger); err != nil {
 		logger.Printf("failed to create site %q from template: %v", siteName, err)
 		jsonError(w, "failed to create site folder", http.StatusInternalServerError)
 		return

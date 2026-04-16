@@ -55,6 +55,8 @@ All configuration is provided via environment variables.
 | `CF_TUNNEL_ID` | — | UUID of the Cloudflare Tunnel to manage. |
 | `CF_TUNNEL_HOSTNAME` | `<tunnel_id>.cfargotunnel.com` | Tunnel hostname used as the CNAME target. Auto-derived from `CF_TUNNEL_ID` if not set. |
 | `CF_ENABLE_WWW_REDIRECT` | `false` | When `true`, adds a `www.<domain>` Tunnel ingress rule for apex domain sites. |
+| `PUID` | `99` | User ID applied to created site files and `enabled.json`. Defaults to the Unraid `nobody` UID. |
+| `PGID` | `100` | Group ID applied to created site files and `enabled.json`. Defaults to the Unraid `users` GID. |
 
 Cloudflare reconciliation is skipped if `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_TUNNEL_ID`, or zone configuration is missing, so the service can run in Caddy-only mode without any Cloudflare credentials.
 
@@ -66,7 +68,7 @@ When creating a site from the dashboard, a starter template is copied into the n
 |---|---|
 | `static-html` | A minimal static HTML site with a CSS stylesheet and placeholder `index.html`. Extra empty directories (`assets/js`, `assets/images`) are created automatically. |
 
-File ownership is set to the `nobody` user/group when available, which is the correct owner for shares on Unraid hosts.
+File ownership is set using the configured `PUID`/`PGID` values (default `99`/`100`, matching the Unraid `nobody:users` owner).
 
 ## Optional www redirect
 
