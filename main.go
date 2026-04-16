@@ -109,10 +109,21 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
+			// Clear the preview cookie when returning to the dashboard.
+			http.SetCookie(w, &http.Cookie{
+				Name:     previewCookieName,
+				Value:    "",
+				Path:     "/",
+				MaxAge:   -1,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
 			http.ServeFile(w, r, filepath.Join(cfg.TemplatesDir, "dashboard.html"))
 			return
 		}
-		http.NotFound(w, r)
+		// Fallback: if a preview cookie is set, proxy absolute-path requests
+		// (e.g. /assets/...) to Caddy for the previewed site.
+		handlePreviewFallback(state, cfg.CaddyServiceURL, w, r)
 	}))
 	mux.HandleFunc("/preview/", func(w http.ResponseWriter, r *http.Request) {
 		handlePreview(state, cfg.CaddyServiceURL, w, r)

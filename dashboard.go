@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -353,6 +355,16 @@ func handlePreview(state *State, caddyServiceURL string, w http.ResponseWriter, 
 		return
 	}
 
+	// Set the preview cookie so that subsequent absolute-path requests
+	// (e.g. from JS-generated <link> elements) can be routed correctly.
+	http.SetCookie(w, &http.Cookie{
+		Name:     previewCookieName,
+		Value:    url.PathEscape(decodedSite),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+
 	// Reverse-proxy to Caddy, setting the Host header so Caddy matches the
 	// correct virtual host, and stripping the /preview/<site> prefix.
 	target, err := url.Parse(caddyServiceURL)
@@ -360,9 +372,91 @@ func handlePreview(state *State, caddyServiceURL string, w http.ResponseWriter, 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	prefix := "/preview/" + url.PathEscape(decodedSite)
+
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// Disable Accept-Encoding so Caddy returns uncompressed responses,
+	// allowing us to rewrite HTML content.
+	origDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		origDirector(req)
+		req.Header.Del("Accept-Encoding")
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		return rewritePreviewResponse(resp, prefix)
+	}
 	r.URL.Path = filePath
 	r.URL.RawPath = ""
+	r.Host = decodedSite
+	proxy.ServeHTTP(w, r)
+}
+
+const previewCookieName = "_preview"
+
+// previewAbsPathRe matches src="/, href="/, action="/ (double or single quotes)
+// but NOT src="//", href="//", etc. (protocol-relative URLs).
+var previewAbsPathRe = regexp.MustCompile(`((?:src|href|action)\s*=\s*["'])(/[^/"'])`)
+
+// rewritePreviewResponse rewrites absolute paths in HTML responses to include
+// the preview prefix so that assets and navigation work correctly.
+func rewritePreviewResponse(resp *http.Response, prefix string) error {
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+
+	// Rewrite absolute paths in HTML attributes.
+	rewritten := previewAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}"))
+
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	return nil
+}
+
+// handlePreviewFallback proxies requests that arrive with absolute paths
+// (e.g. /assets/...) while a preview cookie is set. This handles resources
+// loaded by JavaScript at runtime that cannot be rewritten in HTML.
+func handlePreviewFallback(state *State, caddyServiceURL string, w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(previewCookieName)
+	if err != nil || cookie.Value == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	decodedSite, err := url.PathUnescape(cookie.Value)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Validate against known sites to prevent arbitrary proxying.
+	known := false
+	for _, name := range state.AllSiteNames() {
+		if name == decodedSite {
+			known = true
+			break
+		}
+	}
+	if !known {
+		http.NotFound(w, r)
+		return
+	}
+
+	target, err := url.Parse(caddyServiceURL)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
 	r.Host = decodedSite
 	proxy.ServeHTTP(w, r)
 }
