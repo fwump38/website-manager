@@ -401,6 +401,10 @@ var previewAbsPathRe = regexp.MustCompile(`((?:src|href|action)\s*=\s*["'])(/[^/
 // rewritePreviewResponse rewrites absolute paths in HTML responses to include
 // the preview prefix so that assets and navigation work correctly.
 func rewritePreviewResponse(resp *http.Response, prefix string) error {
+	// Prevent caching of all preview responses so that browsers always fetch
+	// fresh content with the correct preview-prefixed paths.
+	resp.Header.Set("Cache-Control", "no-store")
+
 	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "text/html") {
 		return nil
