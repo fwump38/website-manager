@@ -1,7 +1,18 @@
 # website-manager
-A Golang-based site manager for Caddy and Cloudflare.
 
-This service watches a mounted sites directory, tracks site enable/disable state in `enabled.json`, regenerates a single-port Caddyfile, reloads Caddy, and syncs Cloudflare DNS and Tunnel ingress rules while preserving existing tunnel routes not managed by the site manager.
+A Golang-based site manager for Caddy and Cloudflare, designed for self-hosted environments (e.g. Unraid NAS).
+
+It watches a mounted sites directory, manages site enable/disable state, regenerates and reloads Caddy's configuration, and reconciles Cloudflare DNS records and Tunnel ingress rules — all from a single web dashboard.
+
+## How it works
+
+Each subdirectory under the configured sites path is treated as a site whose name is the hostname to serve (e.g. `blog.example.com`). The service:
+
+1. **Discovers** site directories at startup and via filesystem watch.
+2. **Tracks state** in `enabled.json` — which sites are enabled and whether their DNS has been provisioned.
+3. **Generates** a Caddyfile for all enabled sites and reloads Caddy via its admin API.
+4. **Reconciles** Cloudflare DNS (CNAME records pointing at the Cloudflare Tunnel) and Tunnel ingress rules for enabled sites, cleaning up rules for sites that are disabled.
+5. **Exposes a dashboard** on port `8080` to view, create, enable, and disable sites.
 
 ## Quick start
 
@@ -11,19 +22,17 @@ This service watches a mounted sites directory, tracks site enable/disable state
 CF_API_TOKEN=your_cloudflare_api_token
 CF_ACCOUNT_ID=your_account_id
 CF_TUNNEL_ID=your_tunnel_uuid
-CF_ZONE_MAP=example.com=zone_id_for_example,example2=zone_id_for_example2,example3.com=zone_id_for_example3
+CF_ZONE_MAP=example.com=zone_id_1,other.com=zone_id_2
 CF_ENABLE_WWW_REDIRECT=false
-# CADDY_SERVICE_URL=http://192.168.1.2:8383  # set to host LAN IP:port if tunnel is outside Docker network
+# CADDY_SERVICE_URL=http://192.168.1.2:80  # override if Caddy is not in the same Docker network
 ```
 
-If you are using a single zone, you may instead set:
+If you manage only a single domain, you can use the simpler pair instead of `CF_ZONE_MAP`:
 
 ```env
-CF_ZONE_ID=your_zone_id_for_example_com
+CF_ZONE_ID=your_zone_id
 CF_ZONE_DOMAIN=example.com
 ```
-
-If you use `CF_ZONE_MAP`, then `CF_ZONE_ID` and `CF_ZONE_DOMAIN` are not required.
 
 2. Run with Docker Compose:
 
@@ -31,48 +40,86 @@ If you use `CF_ZONE_MAP`, then `CF_ZONE_ID` and `CF_ZONE_DOMAIN` are not require
 docker compose up -d
 ```
 
-3. Visit the dashboard on port `8080` to view discovered sites and toggle them on/off.
+3. Open the dashboard at `http://<host>:8080`.
 
-> Each directory under the mounted sites share should be named with the full hostname you want to serve, for example `example.com`, `blog.example2`, or `shop.example3.com`.
+From the dashboard you can create new sites (choosing a domain, an optional subdomain, and a starter template), enable or disable existing ones, and see live DNS status for each enabled site.
 
-## Optional www Redirect
+> Site directories can also be created manually. Any directory added to or removed from the sites folder is picked up automatically by the filesystem watcher.
 
-Set `CF_ENABLE_WWW_REDIRECT=true` to automatically add ingress rules for `www.<domain>` in addition to `<domain>` for base domains in the sites folder. If both `www.<domain>` and `<domain>` folders exist, they are served independently. This does not affect DNS or Caddy configuration, only Cloudflare tunnel ingress.
+## Configuration
+
+All configuration is provided via environment variables.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SITES_DIR` | `/sites` | Path to the directory containing site folders. |
+| `STATE_FILE` | `$SITES_DIR/enabled.json` | Path to the JSON state file. |
+| `CADDYFILE_OUTPUT` | `/etc/caddy/Caddyfile` | Path where the generated Caddyfile is written. |
+| `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API URL used for config reload. |
+| `CADDY_SERVICE_URL` | `http://caddy:80` | Caddy service URL used as the Cloudflare Tunnel backend. |
+| `DASHBOARD_PORT` | `8080` | Port the dashboard listens on. |
+| `CF_API_TOKEN` | — | Cloudflare API token (see below). |
+| `CF_ACCOUNT_ID` | — | Cloudflare account ID. |
+| `CF_TUNNEL_ID` | — | UUID of the Cloudflare Tunnel to manage. |
+| `CF_TUNNEL_HOSTNAME` | `<tunnel_id>.cfargotunnel.com` | Tunnel hostname used as the CNAME target. Auto-derived from `CF_TUNNEL_ID` if not set. |
+| `CF_ZONE_MAP` | — | Comma-separated `domain=zone_id` pairs for multi-domain setups. |
+| `CF_ZONE_ID` | — | Zone ID for single-domain setups (use instead of `CF_ZONE_MAP`). |
+| `CF_ZONE_DOMAIN` | — | Domain name for single-domain setups (use instead of `CF_ZONE_MAP`). |
+| `CF_ENABLE_WWW_REDIRECT` | `false` | When `true`, adds a `www.<domain>` Tunnel ingress rule for apex domain sites. |
+
+Cloudflare reconciliation is skipped if `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_TUNNEL_ID`, or zone configuration is missing, so the service can run in Caddy-only mode without any Cloudflare credentials.
+
+## Site templates
+
+When creating a site from the dashboard, a starter template is copied into the new site directory. The following templates are available:
+
+| Template | Description |
+|---|---|
+| `static-html` | A minimal static HTML site with a CSS stylesheet and placeholder `index.html`. Extra empty directories (`assets/js`, `assets/images`) are created automatically. |
+
+File ownership is set to the `nobody` user/group when available, which is the correct owner for shares on Unraid hosts.
+
+## Optional www redirect
+
+Set `CF_ENABLE_WWW_REDIRECT=true` to automatically add a `www.<domain>` ingress rule in the Cloudflare Tunnel for any enabled apex-domain site. This affects Tunnel ingress only — no extra DNS record or Caddy vhost is created. If you have a dedicated `www.<domain>` directory in the sites folder it is treated as an independent site and is unaffected by this setting.
 
 ## Cloudflare API token
 
-Create a restricted Cloudflare API token with the minimum permissions required for this service:
+Create a **Custom Token** with the following permissions:
 
-Permission groups (create a Custom Token):
+| Scope | Permission |
+|---|---|
+| Account → Cloudflare Tunnel | Edit |
+| Zone → DNS | Edit |
+| Zone → Zone | Read |
 
-- Account: Cloudflare Tunnel: Edit
+> **Note:** In the Cloudflare dashboard, tunnels are listed under the *Zero Trust* product but the API permission is still labelled **Cloudflare Tunnel**, not Zero Trust.
 
-- Zone: DNS: Edit
+Steps: Cloudflare dashboard → My Profile → API Tokens → Create Token → Custom Token → add the three permissions above → under Zone Resources set *Include → Specific zone → [your domain]*.
 
-- Zone: Zone: Read
+For multi-domain setups, include every domain's zone under Zone Resources and list all of them in `CF_ZONE_MAP`. The token must have `DNS Edit` permission on each zone.
 
-The Zone: Read permission is required because the service needs to look up zone metadata when making DNS API calls.
+## REST API
 
-One important gotcha: Cloudflare Tunnel is not the same as Zero Trust in the permissions UI — tunnels are now marketed as "Zero Trust tunnels" but the actual permission group you want is still labeled Cloudflare Tunnel, not Zero Trust.
+The dashboard is backed by a small REST API:
 
-To create it:
-
-Cloudflare dashboard → My Profile → API Tokens → Create Token → Custom Token
-
-Add the 3 permissions above
-
-Under Zone Resources: Include → Specific zone → [your domain]
-
-No IP filtering needed for a home NAS (unless you want to lock it to your WAN IP)
-
-If you manage multiple domains, include each domain's zone in `CF_ZONE_MAP`. The token must have `DNS Edit` permissions on every zone listed in `CF_ZONE_MAP`.
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/sites` | List all discovered sites and their state. |
+| `POST` | `/api/sites` | Create a new site from a template. Body: `{"subdomain":"blog","domain":"example.com","template":"static-html"}` |
+| `PATCH` | `/api/sites/:name` | Enable or disable a site. Body: `{"enabled":true}` |
+| `GET` | `/api/domains` | List domains available from the configured zone map. |
+| `GET` | `/api/dns-check?site=:name` | Check whether a site's DNS is resolving via Cloudflare's `1.1.1.1` resolver. |
+| `GET` | `/health` | Health check — returns `200 ok`. |
 
 ## Publishing container images
 
-This repository is configured to publish container images to GitHub Container Registry whenever a new SemVer tag is pushed.
+Images are published to GitHub Container Registry on every SemVer tag push.
 
-- Push a tag like `v1.2.0`
-- GitHub Actions will build the image and push `ghcr.io/<owner>/<repo>:v1.2.0`
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+# → builds and pushes ghcr.io/<owner>/<repo>:v1.2.0
+```
 
 ## Development
 
@@ -80,13 +127,18 @@ This repository is configured to publish container images to GitHub Container Re
 go test ./...
 ```
 
-## Files
+## Project structure
 
-- `main.go` — application bootstrap and reconcile loop
-- `state.go` — `enabled.json` state management
-- `watcher.go` — site folder discovery and filesystem watcher
-- `caddy.go` — Caddyfile generation and reload
-- `cloudflare.go` — Cloudflare DNS and Tunnel ingress reconciliation
-- `dashboard.go` — web dashboard and REST API
-- `templates/` — dashboard UI and Caddyfile template
-- `Dockerfile` / `docker-compose.yml` — container deployment
+| File / Directory | Description |
+|---|---|
+| `main.go` | Application bootstrap, config loading, and reconcile loop. |
+| `state.go` | Thread-safe `enabled.json` state management. |
+| `watcher.go` | Site folder discovery and filesystem watcher (fsnotify). |
+| `caddy.go` | Caddyfile template rendering and Caddy admin API reload. |
+| `cloudflare.go` | Cloudflare DNS record and Tunnel ingress reconciliation. |
+| `dashboard.go` | Web dashboard HTTP handlers and REST API. |
+| `sitetemplates.go` | Embedded site template scaffolding (`go:embed`). |
+| `templates/` | Dashboard HTML and Caddyfile Go template. |
+| `site-templates/` | Embedded starter templates copied when a new site is created. |
+| `Dockerfile` | Multi-stage build producing a minimal Alpine image. |
+| `docker-compose.yml` | Reference deployment with Caddy and site-manager services. |
