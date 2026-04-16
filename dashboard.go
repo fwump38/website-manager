@@ -409,6 +409,13 @@ var previewAbsSrcURLRe = regexp.MustCompile(`(/[^/\s,'"<>][^\s,'"<>]*)`)
 // directory. This covers CSS chunks, JS chunks, images, and fonts injected at runtime.
 var previewJSAbsPathRe = regexp.MustCompile("([`\"'])(/assets/[^`\"'<>\\s]+)([`\"'])")
 
+// previewJSRelAssetRe matches relative Vite dep paths of the form "assets/..." in
+// JavaScript string literals. Vite's __vite__mapDeps stores deps without a leading
+// slash and the preload helper constructs absolute URLs at runtime by prepending "/".
+// We insert the preview prefix (minus its own leading slash) so that "/" + dep
+// resolves to the correct /preview/<site>/assets/... path.
+var previewJSRelAssetRe = regexp.MustCompile(`(["'])(assets/[^"'<>\s]+)(["'])`)
+
 // rewritePreviewResponse rewrites absolute paths in HTML and JavaScript responses to
 // include the preview prefix so that assets and navigation work correctly.
 func rewritePreviewResponse(resp *http.Response, prefix string) error {
@@ -455,6 +462,13 @@ func rewritePreviewResponse(resp *http.Response, prefix string) error {
 		// bundlers embed asset paths as plain string literals; rewriting them
 		// here means the JS never makes a request to the wrong origin.
 		rewritten = previewJSAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}${3}"))
+
+		// Rewrite relative Vite dep paths ("assets/...") stored in __vite__mapDeps.
+		// Vite's preload helper constructs absolute URLs at runtime via "/" + dep.
+		// By inserting the preview prefix without its leading "/", the runtime
+		// concatenation produces "/preview/<site>/assets/..." instead of "/assets/...".
+		trimmedPrefix := strings.TrimPrefix(prefix, "/")
+		rewritten = previewJSRelAssetRe.ReplaceAll(rewritten, []byte("${1}"+trimmedPrefix+"/${2}${3}"))
 	}
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
