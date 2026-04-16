@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/user"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -64,7 +66,18 @@ func SaveState(path string, s *State) error {
 	if err := os.WriteFile(tempFile, payload, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tempFile, path)
+	if err := os.Rename(tempFile, path); err != nil {
+		return err
+	}
+	// Best-effort chown to nobody:users for Unraid compatibility.
+	if u, err := user.Lookup("nobody"); err == nil {
+		if g, err := user.LookupGroup("users"); err == nil {
+			uid, _ := strconv.Atoi(u.Uid)
+			gid, _ := strconv.Atoi(g.Gid)
+			_ = os.Chown(path, uid, gid)
+		}
+	}
+	return nil
 }
 
 func (s *State) AddSite(site string) {

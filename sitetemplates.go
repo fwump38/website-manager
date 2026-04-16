@@ -112,9 +112,9 @@ func resolveNobodyIDs(logger *log.Logger) (uid, gid int, hasOwnership bool) {
 		logger.Printf("warning: could not look up 'nobody' user, skipping chown: %v", err)
 		return 0, 0, false
 	}
-	g, err := user.LookupGroup("nobody")
+	g, err := user.LookupGroup("users")
 	if err != nil {
-		logger.Printf("warning: could not look up 'nobody' group, skipping chown: %v", err)
+		logger.Printf("warning: could not look up 'users' group, skipping chown: %v", err)
 		return 0, 0, false
 	}
 	uidInt, err := strconv.Atoi(u.Uid)
