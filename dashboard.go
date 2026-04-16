@@ -398,6 +398,12 @@ const previewCookieName = "_preview"
 // but NOT src="//", href="//", etc. (protocol-relative URLs).
 var previewAbsPathRe = regexp.MustCompile(`((?:src|href|action)\s*=\s*["'])(/[^/"'])`)
 
+// previewSrcsetRe matches a complete srcset attribute value (including surrounding quotes).
+var previewSrcsetRe = regexp.MustCompile(`(srcset\s*=\s*["'])([^"']+)(["'])`)
+
+// previewAbsSrcURLRe matches absolute paths (not protocol-relative) within srcset values.
+var previewAbsSrcURLRe = regexp.MustCompile(`(/[^/\s,'"<>][^\s,'"<>]*)`)
+
 // rewritePreviewResponse rewrites absolute paths in HTML responses to include
 // the preview prefix so that assets and navigation work correctly.
 func rewritePreviewResponse(resp *http.Response, prefix string) error {
@@ -416,8 +422,24 @@ func rewritePreviewResponse(resp *http.Response, prefix string) error {
 		return err
 	}
 
-	// Rewrite absolute paths in HTML attributes.
+	// Rewrite absolute paths in single-URL HTML attributes (src, href, action).
 	rewritten := previewAbsPathRe.ReplaceAll(body, []byte("${1}"+prefix+"${2}"))
+
+	// Rewrite absolute paths within srcset attribute values. The browser
+	// prefers srcset over src for responsive images, so every URL entry inside
+	// the srcset must also be prefixed.
+	rewritten = previewSrcsetRe.ReplaceAllFunc(rewritten, func(match []byte) []byte {
+		parts := previewSrcsetRe.FindSubmatch(match)
+		if parts == nil {
+			return match
+		}
+		inner := previewAbsSrcURLRe.ReplaceAll(parts[2], []byte(prefix+"$1"))
+		out := make([]byte, 0, len(parts[1])+len(inner)+len(parts[3]))
+		out = append(out, parts[1]...)
+		out = append(out, inner...)
+		out = append(out, parts[3]...)
+		return out
+	})
 
 	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
 	resp.ContentLength = int64(len(rewritten))
@@ -426,17 +448,12 @@ func rewritePreviewResponse(resp *http.Response, prefix string) error {
 }
 
 // handlePreviewFallback proxies requests that arrive with absolute paths
-// (e.g. /assets/...) while a preview cookie is set. This handles resources
+// (e.g. /assets/...) while a preview session is active. This handles resources
 // loaded by JavaScript at runtime that cannot be rewritten in HTML.
 func handlePreviewFallback(state *State, caddyServiceURL string, w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(previewCookieName)
-	if err != nil || cookie.Value == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	decodedSite, err := url.PathUnescape(cookie.Value)
-	if err != nil {
+	decodedSite := previewSiteFromRequest(r)
+	if decodedSite == "" {
+		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 		return
 	}
@@ -450,6 +467,7 @@ func handlePreviewFallback(state *State, caddyServiceURL string, w http.Response
 		}
 	}
 	if !known {
+		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 		return
 	}
@@ -461,6 +479,50 @@ func handlePreviewFallback(state *State, caddyServiceURL string, w http.Response
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Set("Cache-Control", "no-store")
+		return nil
+	}
 	r.Host = decodedSite
 	proxy.ServeHTTP(w, r)
+}
+
+// previewSiteFromRequest returns the previewed site name by checking the
+// preview cookie first, then falling back to the Referer header. Using the
+// Referer means in-page asset requests (JS, CSS, images with hardcoded
+// absolute paths) still proxy correctly even when the cookie has been cleared
+// (e.g. by opening the dashboard in another tab).
+func previewSiteFromRequest(r *http.Request) string {
+	// Primary: cookie set by handlePreview.
+	if cookie, err := r.Cookie(previewCookieName); err == nil && cookie.Value != "" {
+		if decoded, err := url.PathUnescape(cookie.Value); err == nil && decoded != "" {
+			return decoded
+		}
+	}
+
+	// Secondary: Referer header — browsers always include it for sub-resource
+	// requests (script, link, img) originating from a same-origin page.
+	ref := r.Referer()
+	if ref == "" {
+		return ""
+	}
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	rest := strings.TrimPrefix(refURL.Path, "/preview/")
+	if rest == refURL.Path {
+		return "" // Referer is not a /preview/ path.
+	}
+	var siteName string
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		siteName = rest[:idx]
+	} else {
+		siteName = rest
+	}
+	decoded, err := url.PathUnescape(siteName)
+	if err != nil || decoded == "" {
+		return ""
+	}
+	return decoded
 }
