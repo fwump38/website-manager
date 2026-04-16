@@ -13,6 +13,8 @@ h1 { margin: 0; font-size: 2rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 .card { background: #1f2937; border: 1px solid #374151; border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.12); }
 .card h2 { margin: 0 0 12px; font-size: 1.1rem; }
+.card h2 a { color: inherit; text-decoration: none; }
+.card h2 a:hover { text-decoration: underline; }
 .badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .badge { display: inline-flex; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; letter-spacing: 0.02em; }
 .badge.enabled { background: #10b981; color: #ecfccb; }
@@ -235,7 +237,7 @@ function renderSites(sites) {
       : '';
     return `
     <div class="card" id="site-${site.name}">
-      <h2>${site.name}</h2>
+      <h2><a href="https://${site.name}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
       <div class="badges">
         <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
         ${wwwBadge}
