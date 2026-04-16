@@ -34,6 +34,17 @@ button:hover:not(:disabled) { background: #1d4ed8; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #d1d5db; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); }}
 
+/* Filter bar */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 20px; }
+.filter-domains { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+.filter-btn { background: #374151; color: #d1d5db; border: 1px solid #4b5563; border-radius: 999px; padding: 6px 14px; cursor: pointer; font-size: 0.85rem; transition: background 0.15s, border-color 0.15s; }
+.filter-btn:hover { background: #4b5563; border-color: #6b7280; }
+.filter-btn.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+/* Domain sections */
+.domain-section { margin-bottom: 28px; }
+.domain-header { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid #374151; }
+
 /* Modals */
 dialog {
   background: #1f2937;
@@ -113,7 +124,11 @@ dialog h2 { margin: 0 0 20px; font-size: 1.3rem; }
       <button id="refresh">Refresh</button>
     </div>
   </header>
-  <div class="grid" id="siteGrid"></div>
+  <div id="filterBar" class="filter-bar">
+    <div class="filter-domains" id="domainFilters"></div>
+    <button id="toggleDisabled" class="filter-btn">Hide Disabled</button>
+  </div>
+  <div id="siteGrid"></div>
 </div>
 
 <!-- Toast container -->
@@ -185,6 +200,13 @@ const confirmDeleteDialog = document.getElementById('confirmDeleteDialog');
 const deleteSiteNameEl = document.getElementById('deleteSiteName');
 const cancelDelete = document.getElementById('cancelDelete');
 const submitDelete = document.getElementById('submitDelete');
+const toggleDisabledBtn = document.getElementById('toggleDisabled');
+const domainFiltersEl = document.getElementById('domainFilters');
+
+// ── Filter state ───────────────────────────────────────────────────────────
+let allSites = [];
+let activeFilter = null; // null = show all domains
+let showDisabled = true;
 
 refreshButton.addEventListener('click', fetchSites);
 
@@ -203,6 +225,53 @@ function showToast(message) {
   });
 }
 
+// ── Domain helpers ─────────────────────────────────────────────────────────
+
+function apexDomain(siteName) {
+  const parts = siteName.split('.');
+  return parts.slice(-2).join('.');
+}
+
+function groupSites(sites) {
+  const groups = {};
+  for (const site of sites) {
+    const apex = apexDomain(site.name);
+    if (!groups[apex]) groups[apex] = [];
+    groups[apex].push(site);
+  }
+  const sorted = {};
+  for (const apex of Object.keys(groups).sort()) {
+    groups[apex].sort((a, b) => {
+      if (a.name === apex) return -1;
+      if (b.name === apex) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    sorted[apex] = groups[apex];
+  }
+  return sorted;
+}
+
+// ── Filter bar ─────────────────────────────────────────────────────────────
+
+function renderFilterBar() {
+  const allDomains = [...new Set(allSites.map(s => apexDomain(s.name)))].sort();
+  const buttons = ['All', ...allDomains].map(d => {
+    const isActive = d === 'All' ? activeFilter === null : activeFilter === d;
+    return `<button class="filter-btn${isActive ? ' active' : ''}" data-domain="${d}">${d}</button>`;
+  }).join('');
+  domainFiltersEl.innerHTML = buttons;
+  domainFiltersEl.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = btn.dataset.domain;
+      activeFilter = d === 'All' ? null : d;
+      renderFilterBar();
+      renderSites();
+    });
+  });
+  toggleDisabledBtn.textContent = showDisabled ? 'Hide Disabled' : 'Show Disabled';
+  toggleDisabledBtn.classList.toggle('active', !showDisabled);
+}
+
 // ── Site grid ──────────────────────────────────────────────────────────────
 
 async function fetchSites() {
@@ -211,45 +280,66 @@ async function fetchSites() {
   try {
     const res = await fetch('/api/sites');
     if (!res.ok) throw new Error('Failed to fetch sites');
-    const sites = await res.json();
-    renderSites(sites);
-    statusEl.textContent = `${sites.length} site${sites.length === 1 ? '' : 's'} discovered`;
+    allSites = await res.json();
+    renderFilterBar();
+    renderSites();
+    statusEl.textContent = `${allSites.length} site${allSites.length === 1 ? '' : 's'} discovered`;
     // Kick off DNS checks for enabled sites.
-    sites.filter(s => s.enabled).forEach(s => checkDNS(s.name));
+    allSites.filter(s => s.enabled).forEach(s => checkDNS(s.name));
   } catch (err) {
     statusEl.textContent = err.message;
   }
 }
 
-function renderSites(sites) {
-  if (!sites.length) {
+function renderSites() {
+  let sites = allSites;
+  if (activeFilter) {
+    sites = sites.filter(s => apexDomain(s.name) === activeFilter);
+  }
+  if (!showDisabled) {
+    sites = sites.filter(s => s.enabled);
+  }
+
+  if (!allSites.length) {
     grid.innerHTML = '<p>No sites discovered yet. Create a new directory in the mounted sites folder.</p>';
     return;
   }
-  grid.innerHTML = sites.map(site => {
-    const toggleBtnClass = site.enabled ? 'btn-danger' : '';
-    const toggleBtnLabel = site.enabled ? 'Disable' : 'Enable';
-    const hint = site.enabled ? 'Live on Cloudflare + Caddy' : 'Not published yet';
-    const wwwBadge = site.has_www ? '<span class="badge www">www</span>' : '';
-    const liveBadgeId = `dns-badge-${CSS.escape(site.name)}`;
-    const liveBadge = site.enabled
-      ? `<span class="badge checking" id="${liveBadgeId}">Checking DNS…</span>`
-      : '';
-    return `
-    <div class="card" id="site-${site.name}">
-      <h2><a href="https://${site.name}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
-      <div class="badges">
-        <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
-        ${wwwBadge}
-        ${liveBadge}
+  if (!sites.length) {
+    grid.innerHTML = '<p>No sites match the current filters.</p>';
+    return;
+  }
+
+  const groups = groupSites(sites);
+  grid.innerHTML = Object.entries(groups).map(([apex, domainSites]) => `
+    <div class="domain-section">
+      <h3 class="domain-header">${apex}</h3>
+      <div class="grid">
+        ${domainSites.map(site => {
+          const toggleBtnClass = site.enabled ? 'btn-danger' : '';
+          const toggleBtnLabel = site.enabled ? 'Disable' : 'Enable';
+          const hint = site.enabled ? 'Live on Cloudflare + Caddy' : 'Not published yet';
+          const wwwBadge = site.has_www ? '<span class="badge www">www</span>' : '';
+          const liveBadgeId = `dns-badge-${CSS.escape(site.name)}`;
+          const liveBadge = site.enabled
+            ? `<span class="badge checking" id="${liveBadgeId}">Checking DNS…</span>`
+            : '';
+          return `
+          <div class="card" id="site-${site.name}">
+            <h2><a href="https://${site.name}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
+            <div class="badges">
+              <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
+              ${wwwBadge}
+              ${liveBadge}
+            </div>
+            <div class="toggle">
+              <button class="${toggleBtnClass}" data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${toggleBtnLabel}</button>
+              ${!site.enabled ? `<button class="btn-danger" data-delete-site="${encodeURIComponent(site.name)}">Delete</button>` : ''}
+              <span class="hint">${hint}</span>
+            </div>
+          </div>`;
+        }).join('')}
       </div>
-      <div class="toggle">
-        <button class="${toggleBtnClass}" data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${toggleBtnLabel}</button>
-        ${!site.enabled ? `<button class="btn-danger" data-delete-site="${encodeURIComponent(site.name)}">Delete</button>` : ''}
-        <span class="hint">${hint}</span>
-      </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 
   grid.querySelectorAll('button[data-site]').forEach(button => {
     button.addEventListener('click', () => {
@@ -488,6 +578,12 @@ submitCreate.addEventListener('click', async () => {
 });
 
 // ── Init ───────────────────────────────────────────────────────────────────
+
+toggleDisabledBtn.addEventListener('click', () => {
+  showDisabled = !showDisabled;
+  renderFilterBar();
+  renderSites();
+});
 
 fetchSites();
 initDomains();
