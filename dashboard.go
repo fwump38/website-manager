@@ -396,5 +396,31 @@ func handlePreview(state *State, sitesDir string, w http.ResponseWriter, r *http
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
+	// Set explicit MIME types for common web assets whose types may be
+	// absent or wrong in the Alpine Linux MIME database.
+	switch strings.ToLower(filepath.Ext(resolved)) {
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js", ".mjs":
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".gif":
+		w.Header().Set("Content-Type", "image/gif")
+	case ".svg":
+		w.Header().Set("Content-Type", "image/svg+xml")
+	case ".webp":
+		w.Header().Set("Content-Type", "image/webp")
+	case ".ico":
+		w.Header().Set("Content-Type", "image/x-icon")
+	case ".woff":
+		w.Header().Set("Content-Type", "font/woff")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	}
+
 	http.ServeFile(w, r, resolved)
 }
