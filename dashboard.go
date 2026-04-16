@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -310,7 +311,7 @@ func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *Cloudf
 	_ = json.NewEncoder(w).Encode(view)
 }
 
-func handlePreview(state *State, sitesDir string, w http.ResponseWriter, r *http.Request) {
+func handlePreview(state *State, caddyServiceURL string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -352,75 +353,16 @@ func handlePreview(state *State, sitesDir string, w http.ResponseWriter, r *http
 		return
 	}
 
-	// Path-traversal guard: resolved path must be strictly under sitesDir.
-	safeBase := filepath.Clean(sitesDir)
-	siteRoot := filepath.Join(safeBase, decodedSite)
-	if siteRoot == safeBase || !strings.HasPrefix(siteRoot, safeBase+string(filepath.Separator)) {
-		http.Error(w, "invalid site path", http.StatusBadRequest)
+	// Reverse-proxy to Caddy, setting the Host header so Caddy matches the
+	// correct virtual host, and stripping the /preview/<site> prefix.
+	target, err := url.Parse(caddyServiceURL)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	// Block dotfiles.
-	for _, seg := range strings.Split(filePath, "/") {
-		if strings.HasPrefix(seg, ".") && seg != "." && seg != "" {
-			http.NotFound(w, r)
-			return
-		}
-	}
-
-	// try_files: {path}, {path}.html, {path}/index.html (mirrors Caddy config).
-	cleanPath := filepath.Clean(filePath)
-	candidates := []string{
-		filepath.Join(siteRoot, cleanPath),
-		filepath.Join(siteRoot, cleanPath+".html"),
-		filepath.Join(siteRoot, cleanPath, "index.html"),
-	}
-
-	var resolved string
-	for _, c := range candidates {
-		abs := filepath.Clean(c)
-		if !strings.HasPrefix(abs, siteRoot+string(filepath.Separator)) && abs != siteRoot {
-			continue // traversal attempt
-		}
-		info, err := os.Stat(abs)
-		if err == nil && !info.IsDir() {
-			resolved = abs
-			break
-		}
-	}
-	if resolved == "" {
-		http.NotFound(w, r)
-		return
-	}
-
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-
-	// Set explicit MIME types for common web assets whose types may be
-	// absent or wrong in the Alpine Linux MIME database.
-	switch strings.ToLower(filepath.Ext(resolved)) {
-	case ".css":
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case ".js", ".mjs":
-		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	case ".jpg", ".jpeg":
-		w.Header().Set("Content-Type", "image/jpeg")
-	case ".png":
-		w.Header().Set("Content-Type", "image/png")
-	case ".gif":
-		w.Header().Set("Content-Type", "image/gif")
-	case ".svg":
-		w.Header().Set("Content-Type", "image/svg+xml")
-	case ".webp":
-		w.Header().Set("Content-Type", "image/webp")
-	case ".ico":
-		w.Header().Set("Content-Type", "image/x-icon")
-	case ".woff":
-		w.Header().Set("Content-Type", "font/woff")
-	case ".woff2":
-		w.Header().Set("Content-Type", "font/woff2")
-	}
-
-	http.ServeFile(w, r, resolved)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	r.URL.Path = filePath
+	r.URL.RawPath = ""
+	r.Host = decodedSite
+	proxy.ServeHTTP(w, r)
 }

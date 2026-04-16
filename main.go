@@ -115,7 +115,7 @@ func main() {
 		http.NotFound(w, r)
 	}))
 	mux.HandleFunc("/preview/", func(w http.ResponseWriter, r *http.Request) {
-		handlePreview(state, cfg.SitesDir, w, r)
+		handlePreview(state, cfg.CaddyServiceURL, w, r)
 	})
 	mux.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -200,13 +200,14 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 
 func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
 	enabledSites := state.EnabledSites()
+	allSites := state.AllSiteNames()
 	var wwwRedirects []string
 	for _, site := range enabledSites {
 		if cf.HasWWWForSite(site) {
 			wwwRedirects = append(wwwRedirects, site)
 		}
 	}
-	if err := caddy.GenerateCaddyfile(enabledSites, wwwRedirects); err != nil {
+	if err := caddy.GenerateCaddyfile(allSites, wwwRedirects); err != nil {
 		logger.Printf("failed to generate caddyfile: %v", err)
 		return
 	}
