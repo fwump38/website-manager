@@ -22,9 +22,6 @@ type Config struct {
 	CFAPIToken          string
 	CFAccountID         string
 	CFTunnelID          string
-	CFZoneID            string
-	CFZoneDomain        string
-	CFZoneMap           string
 	CFTunnelHost        string
 	CFEnableWWWRedirect bool
 	TemplatesDir        string
@@ -41,9 +38,6 @@ func loadConfig() Config {
 		CFAPIToken:          os.Getenv("CF_API_TOKEN"),
 		CFAccountID:         os.Getenv("CF_ACCOUNT_ID"),
 		CFTunnelID:          os.Getenv("CF_TUNNEL_ID"),
-		CFZoneID:            os.Getenv("CF_ZONE_ID"),
-		CFZoneDomain:        os.Getenv("CF_ZONE_DOMAIN"),
-		CFZoneMap:           os.Getenv("CF_ZONE_MAP"),
 		CFTunnelHost:        os.Getenv("CF_TUNNEL_HOSTNAME"),
 		CFEnableWWWRedirect: os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
 		TemplatesDir:        "templates",
@@ -162,7 +156,7 @@ func main() {
 		for {
 			select {
 			case <-reconcileCh:
-				reconcileCaddy(state, cfg, caddy, logger)
+				reconcileCaddy(state, cfg, caddy, cfClient, logger)
 			case <-cfReconcileCh:
 				reconcileCloudflare(state, cfg, cfClient, logger)
 			case <-signalCtx.Done():
@@ -181,13 +175,19 @@ func main() {
 }
 
 func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
-	reconcileCaddy(state, cfg, caddy, logger)
+	reconcileCaddy(state, cfg, caddy, cf, logger)
 	reconcileCloudflare(state, cfg, cf, logger)
 }
 
-func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, logger *log.Logger) {
+func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
 	enabledSites := state.EnabledSites()
-	if err := caddy.GenerateCaddyfile(enabledSites); err != nil {
+	var wwwRedirects []string
+	for _, site := range enabledSites {
+		if cf.HasWWWForSite(site) {
+			wwwRedirects = append(wwwRedirects, site)
+		}
+	}
+	if err := caddy.GenerateCaddyfile(enabledSites, wwwRedirects); err != nil {
 		logger.Printf("failed to generate caddyfile: %v", err)
 		return
 	}
@@ -197,7 +197,7 @@ func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, logger *log.L
 }
 
 func reconcileCloudflare(state *State, cfg Config, cf *CloudflareClient, logger *log.Logger) {
-	if cfg.CFAPIToken == "" || cfg.CFAccountID == "" || cfg.CFTunnelID == "" || (cfg.CFZoneID == "" && cfg.CFZoneMap == "") || cfg.CFTunnelHost == "" {
+	if cfg.CFAPIToken == "" || cfg.CFAccountID == "" || cfg.CFTunnelID == "" || cfg.CFTunnelHost == "" {
 		logger.Println("cloudflare configuration incomplete, skipping Cloudflare sync")
 		return
 	}

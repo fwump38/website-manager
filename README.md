@@ -22,16 +22,8 @@ Each subdirectory under the configured sites path is treated as a site whose nam
 CF_API_TOKEN=your_cloudflare_api_token
 CF_ACCOUNT_ID=your_account_id
 CF_TUNNEL_ID=your_tunnel_uuid
-CF_ZONE_MAP=example.com=zone_id_1,other.com=zone_id_2
 CF_ENABLE_WWW_REDIRECT=false
 # CADDY_SERVICE_URL=http://192.168.1.2:80  # override if Caddy is not in the same Docker network
-```
-
-If you manage only a single domain, you can use the simpler pair instead of `CF_ZONE_MAP`:
-
-```env
-CF_ZONE_ID=your_zone_id
-CF_ZONE_DOMAIN=example.com
 ```
 
 2. Run with Docker Compose:
@@ -62,9 +54,6 @@ All configuration is provided via environment variables.
 | `CF_ACCOUNT_ID` | — | Cloudflare account ID. |
 | `CF_TUNNEL_ID` | — | UUID of the Cloudflare Tunnel to manage. |
 | `CF_TUNNEL_HOSTNAME` | `<tunnel_id>.cfargotunnel.com` | Tunnel hostname used as the CNAME target. Auto-derived from `CF_TUNNEL_ID` if not set. |
-| `CF_ZONE_MAP` | — | Comma-separated `domain=zone_id` pairs for multi-domain setups. |
-| `CF_ZONE_ID` | — | Zone ID for single-domain setups (use instead of `CF_ZONE_MAP`). |
-| `CF_ZONE_DOMAIN` | — | Domain name for single-domain setups (use instead of `CF_ZONE_MAP`). |
 | `CF_ENABLE_WWW_REDIRECT` | `false` | When `true`, adds a `www.<domain>` Tunnel ingress rule for apex domain sites. |
 
 Cloudflare reconciliation is skipped if `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `CF_TUNNEL_ID`, or zone configuration is missing, so the service can run in Caddy-only mode without any Cloudflare credentials.

@@ -27,6 +27,12 @@ http://{{.Name}} {
 }
 
 {{- end}}
+{{- range .WWWEntries}}
+http://{{.WWWName}} {
+    redir http://{{.Apex}}{uri} permanent
+}
+
+{{- end}}
 {{- else}}
 :80 {
     respond "No sites enabled" 404

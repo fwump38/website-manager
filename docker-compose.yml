@@ -30,9 +30,6 @@ services:
       - CF_API_TOKEN=${CF_API_TOKEN:-}
       - CF_ACCOUNT_ID=${CF_ACCOUNT_ID:-}
       - CF_TUNNEL_ID=${CF_TUNNEL_ID:-}
-      - CF_ZONE_ID=${CF_ZONE_ID:-}
-      - CF_ZONE_DOMAIN=${CF_ZONE_DOMAIN:-}
-      - CF_ZONE_MAP=${CF_ZONE_MAP:-}
       - CF_ENABLE_WWW_REDIRECT=false
       - CADDY_SERVICE_URL=${CADDY_SERVICE_URL:-http://caddy:80}
     depends_on:
