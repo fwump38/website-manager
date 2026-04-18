@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -555,4 +556,56 @@ func previewSiteFromRequest(r *http.Request) string {
 		return ""
 	}
 	return decoded
+}
+
+func handleOptimizeImages(state *State, sitesDir string, fileUID, fileGID int, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract site name from: /api/sites/<name>/optimize-images
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+	name := strings.TrimSuffix(trimmed, "/optimize-images")
+	if name == "" || name == trimmed {
+		http.Error(w, "site name required", http.StatusBadRequest)
+		return
+	}
+	decodedName, err := url.PathUnescape(name)
+	if err != nil {
+		http.Error(w, "invalid site name", http.StatusBadRequest)
+		return
+	}
+
+	// Validate site exists in state.
+	known := false
+	for _, s := range state.AllSiteNames() {
+		if s == decodedName {
+			known = true
+			break
+		}
+	}
+	if !known {
+		jsonError(w, "site not found", http.StatusNotFound)
+		return
+	}
+
+	// Path traversal guard.
+	safeBase := filepath.Clean(sitesDir)
+	sitePath := filepath.Join(safeBase, decodedName)
+	if sitePath == safeBase || !strings.HasPrefix(sitePath, safeBase+string(filepath.Separator)) {
+		logger.Printf("optimize images: computed path %q is outside sitesDir %q", sitePath, safeBase)
+		http.Error(w, "invalid site path", http.StatusBadRequest)
+		return
+	}
+
+	result, err := optimizeSiteImages(sitesDir, decodedName, fileUID, fileGID)
+	if err != nil {
+		logger.Printf("optimize images for %q failed: %v", decodedName, err)
+		jsonError(w, fmt.Sprintf("image optimization failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }

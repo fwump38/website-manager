@@ -83,6 +83,22 @@ dialog h2 { margin: 0 0 20px; font-size: 1.3rem; }
 .confirm-body { color: #d1d5db; margin: 0 0 4px; }
 .confirm-name { font-weight: 600; color: #f9fafb; word-break: break-all; }
 
+/* Optimize results modal */
+dialog.optimize-dialog { max-width: 640px; }
+.optimize-summary { color: #10b981; font-size: 1.1rem; font-weight: 600; margin: 0 0 16px; }
+.optimize-list { display: flex; flex-direction: column; gap: 16px; max-height: 50vh; overflow-y: auto; }
+.optimize-item { background: #111827; border: 1px solid #374151; border-radius: 10px; padding: 14px; }
+.optimize-item__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.optimize-item__name { font-weight: 600; font-size: 0.95rem; }
+.optimize-item__dims { font-size: 0.8rem; color: #9ca3af; }
+.optimize-item__variants { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.optimize-item__variant { background: #374151; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; color: #d1d5db; }
+.optimize-item__html-wrap { position: relative; }
+.optimize-item__html { background: #0d1117; border: 1px solid #374151; border-radius: 8px; padding: 10px 12px; font-size: 0.75rem; line-height: 1.4; color: #9ca3af; overflow-x: auto; white-space: pre; font-family: ui-monospace, monospace; max-height: 160px; overflow-y: auto; }
+.optimize-item__copy { position: absolute; top: 6px; right: 6px; background: #374151; border: none; color: #d1d5db; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; cursor: pointer; }
+.optimize-item__copy:hover { background: #4b5563; }
+.optimize-empty { color: #9ca3af; }
+
 /* Toast */
 #toastContainer {
   position: fixed;
@@ -176,6 +192,15 @@ dialog h2 { margin: 0 0 20px; font-size: 1.3rem; }
   <div class="modal-actions">
     <button class="btn-secondary" id="cancelCreate" type="button">Cancel</button>
     <button id="submitCreate" type="button">Create Site</button>
+  </div>
+</dialog>
+
+<!-- Optimize Results Modal -->
+<dialog id="optimizeResultsDialog" class="optimize-dialog" aria-labelledby="optimizeTitle">
+  <h2 id="optimizeTitle">Image Optimization Results</h2>
+  <div id="optimizeResultsContent"></div>
+  <div class="modal-actions">
+    <button class="btn-secondary" id="closeOptimize" type="button">Close</button>
   </div>
 </dialog>
 
@@ -333,6 +358,7 @@ function renderSites() {
             </div>
             <div class="toggle">
               <button class="${toggleBtnClass}" data-site="${encodeURIComponent(site.name)}" data-enabled="${site.enabled}">${toggleBtnLabel}</button>
+              <button class="btn-secondary" data-optimize-site="${encodeURIComponent(site.name)}">Optimize Images</button>
               ${!site.enabled ? `<button class="btn-danger" data-delete-site="${encodeURIComponent(site.name)}">Delete</button>` : ''}
               <span class="hint">${hint}</span>
             </div>
@@ -355,6 +381,10 @@ function renderSites() {
     button.addEventListener('click', () => {
       openDeleteConfirm(decodeURIComponent(button.dataset.deleteSite));
     });
+  });
+
+  grid.querySelectorAll('button[data-optimize-site]').forEach(button => {
+    button.addEventListener('click', () => optimizeSiteImages(button));
   });
 }
 
@@ -576,6 +606,85 @@ submitCreate.addEventListener('click', async () => {
     submitCreate.disabled = false;
   }
 });
+
+// ── Optimize images ───────────────────────────────────────────────────────
+
+const optimizeDialog = document.getElementById('optimizeResultsDialog');
+const optimizeContent = document.getElementById('optimizeResultsContent');
+const closeOptimize = document.getElementById('closeOptimize');
+
+closeOptimize.addEventListener('click', () => optimizeDialog.close());
+optimizeDialog.addEventListener('click', e => {
+  const rect = optimizeDialog.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right ||
+      e.clientY < rect.top  || e.clientY > rect.bottom) {
+    optimizeDialog.close();
+  }
+});
+
+async function optimizeSiteImages(button) {
+  const siteName = decodeURIComponent(button.dataset.optimizeSite);
+  button.disabled = true;
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner';
+  button.parentNode.appendChild(spinner);
+  try {
+    const res = await fetch(`/api/sites/${encodeURIComponent(siteName)}/optimize-images`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Image optimization failed.');
+      return;
+    }
+    const result = await res.json();
+    showOptimizeResults(siteName, result);
+  } catch (err) {
+    showToast(err.message);
+  } finally {
+    button.disabled = false;
+    spinner.remove();
+  }
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function showOptimizeResults(siteName, result) {
+  if (!result.images || result.images.length === 0) {
+    optimizeContent.innerHTML = '<p class="optimize-empty">No source images found in assets/images/. Add PNG or JPEG images and try again.</p>';
+  } else {
+    const summary = `<p class="optimize-summary">Optimized ${result.optimized} image${result.optimized === 1 ? '' : 's'} for ${siteName}</p>`;
+    const items = result.images.map(img => `
+      <div class="optimize-item">
+        <div class="optimize-item__header">
+          <span class="optimize-item__name">${escapeHtml(img.source)}</span>
+          <span class="optimize-item__dims">${img.width} × ${img.height}</span>
+        </div>
+        <div class="optimize-item__variants">
+          ${img.variants.map(v => `<span class="optimize-item__variant">${escapeHtml(v)}</span>`).join('')}
+        </div>
+        <div class="optimize-item__html-wrap">
+          <pre class="optimize-item__html">${escapeHtml(img.html)}</pre>
+          <button class="optimize-item__copy" data-copy-html="${escapeHtml(img.html)}">Copy</button>
+        </div>
+      </div>
+    `).join('');
+    optimizeContent.innerHTML = summary + '<div class="optimize-list">' + items + '</div>';
+    optimizeContent.querySelectorAll('.optimize-item__copy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const html = btn.dataset.copyHtml;
+        navigator.clipboard.writeText(html).then(() => {
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+        });
+      });
+    });
+  }
+  optimizeDialog.showModal();
+  showToast(`Optimized ${result.optimized} image${result.optimized === 1 ? '' : 's'} for ${siteName}.`);
+}
 
 // ── Init ───────────────────────────────────────────────────────────────────
 

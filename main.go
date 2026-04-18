@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -144,6 +145,12 @@ func main() {
 			handleSitePatch(state, cfg.StateFile, reconcileCh, cfReconcileCh, w, r)
 		case http.MethodDelete:
 			handleDeleteSite(state, cfg.StateFile, cfg.SitesDir, reconcileCh, cfReconcileCh, logger, w, r)
+		case http.MethodPost:
+			if strings.HasSuffix(r.URL.Path, "/optimize-images") {
+				handleOptimizeImages(state, cfg.SitesDir, cfg.FileUID, cfg.FileGID, logger, w, r)
+			} else {
+				http.Error(w, "not found", http.StatusNotFound)
+			}
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
