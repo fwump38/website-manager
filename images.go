@@ -61,6 +61,17 @@ func optimizeSiteImages(sitesDir, siteName string, uid, gid int) (*OptimizeResul
 		name := entry.Name()
 		lower := strings.ToLower(name)
 
+		// Delete macOS AppleDouble metadata files (._<name>).
+		if strings.HasPrefix(name, "._") {
+			_ = os.Remove(filepath.Join(imagesDir, name))
+			continue
+		}
+
+		// Skip FUSE temporary files (e.g. .fuse_hidden* from UnRaid/FUSE mounts).
+		if strings.HasPrefix(lower, ".fuse_hidden") {
+			continue
+		}
+
 		// Only process PNG, JPG, JPEG source files.
 		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
