@@ -16,6 +16,11 @@ services:
     image: ghcr.io/fwump38/website-manager:latest
     container_name: site-manager
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '1.0'
     ports:
       - "8080:8080"
     volumes:
@@ -33,6 +38,10 @@ services:
       - PUID=${PUID:-99}
       - PGID=${PGID:-100}
       - MAILGUN_API_KEY=${MAILGUN_API_KEY:-}
+      # Bind the dashboard to a specific address. Leave empty to bind all
+      # interfaces (required when reached via Cloudflare Tunnel from the host).
+      # Set to 127.0.0.1 to restrict to localhost only.
+      - DASHBOARD_BIND=${DASHBOARD_BIND:-}
       - MAILGUN_DOMAIN=${MAILGUN_DOMAIN:-}
     depends_on:
       - caddy

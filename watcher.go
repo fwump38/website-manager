@@ -78,6 +78,21 @@ func shouldHandleEvent(event fsnotify.Event) bool {
 	return true
 }
 
+// isSafeSiteName rejects directory names that contain characters which would
+// corrupt or inject directives into the Caddyfile template (braces, whitespace,
+// control characters).
+func isSafeSiteName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if c == '{' || c == '}' || c == ' ' || c < 0x20 {
+			return false
+		}
+	}
+	return true
+}
+
 func syncDirectoryState(dir string, state *State) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -90,6 +105,10 @@ func syncDirectoryState(dir string, state *State) error {
 			continue
 		}
 		site := entry.Name()
+		if !isSafeSiteName(site) {
+			log.Printf("watcher: skipping directory %q — name contains characters unsafe for Caddyfile generation", site)
+			continue
+		}
 		found[site] = true
 		state.AddSite(site)
 	}

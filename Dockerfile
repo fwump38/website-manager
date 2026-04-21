@@ -8,7 +8,7 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags '-extldflags "-static"' -o site-manager .
 
 # Stage 2: runtime
-FROM alpine:3.19
+FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/site-manager .

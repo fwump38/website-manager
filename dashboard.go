@@ -106,6 +106,27 @@ func handleSitePatch(state *State, sitesDir string, fileUID, fileGID int, reconc
 		return
 	}
 
+	// Guard: site must exist in state (prevents unknown names and path traversal via state bypass).
+	found := false
+	for _, sv := range state.AllSites() {
+		if sv.Name == decodedName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "site not found", http.StatusNotFound)
+		return
+	}
+
+	// Path traversal guard.
+	safeBase := filepath.Clean(sitesDir)
+	sitePath := filepath.Join(safeBase, decodedName)
+	if sitePath == safeBase || !strings.HasPrefix(sitePath, safeBase+string(filepath.Separator)) {
+		http.Error(w, "invalid site path", http.StatusBadRequest)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -234,6 +255,7 @@ func handleCreateSite(state *State, sitesDir string, cfClient *CloudflareClient,
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		jsonError(w, "failed to read body", http.StatusBadRequest)

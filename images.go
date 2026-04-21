@@ -21,7 +21,10 @@ var variantSuffixRe = regexp.MustCompile(`-(800|1200)\.(png|jpg|jpeg|webp)$`)
 
 var optimizeSizes = []int{800, 1200}
 
-const webpQuality = 85
+const (
+	webpQuality      = 85
+	maxImageFileSize = 50 * 1024 * 1024 // 50 MB
+)
 
 // OptimizeResult is the JSON response for the optimize-images endpoint.
 type OptimizeResult struct {
@@ -99,6 +102,16 @@ func processSourceImage(imagesDir, filename string, uid, gid int, hasOwnership b
 	srcPath := filepath.Join(imagesDir, filename)
 	ext := strings.ToLower(filepath.Ext(filename))
 	baseName := strings.TrimSuffix(filename, filepath.Ext(filename))
+
+	// Reject files that exceed the size limit before decoding to prevent
+	// memory exhaustion from crafted images (e.g. decompression bombs).
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxImageFileSize {
+		return nil, fmt.Errorf("source image %s exceeds maximum allowed size (%d MB)", filename, maxImageFileSize/(1024*1024))
+	}
 
 	// Decode the source image.
 	f, err := os.Open(srcPath)

@@ -19,6 +19,7 @@ type Config struct {
 	CaddyAdminURL   string
 	CaddyfilePath   string
 	CaddyServiceURL string
+	DashboardBind   string
 	DashboardPort   string
 	CFAPIToken      string
 	CFAccountID     string
@@ -46,6 +47,7 @@ func loadConfig() Config {
 		CaddyAdminURL:   os.Getenv("CADDY_ADMIN_URL"),
 		CaddyfilePath:   os.Getenv("CADDYFILE_OUTPUT"),
 		CaddyServiceURL: os.Getenv("CADDY_SERVICE_URL"),
+		DashboardBind:   os.Getenv("DASHBOARD_BIND"),
 		DashboardPort:   os.Getenv("DASHBOARD_PORT"),
 		CFAPIToken:      os.Getenv("CF_API_TOKEN"),
 		CFAccountID:     os.Getenv("CF_ACCOUNT_ID"),
@@ -150,7 +152,7 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/api/contact", func(w http.ResponseWriter, r *http.Request) {
-		handleContact(cfg, logger, w, r)
+		handleContact(state, cfg, logger, w, r)
 	})
 	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
 		handleDomains(cfClient, w, r)
@@ -164,8 +166,12 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:    ":" + cfg.DashboardPort,
-		Handler: mux,
+		Addr:              cfg.DashboardBind + ":" + cfg.DashboardPort,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	var wg sync.WaitGroup

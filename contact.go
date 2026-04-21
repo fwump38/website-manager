@@ -34,8 +34,9 @@ type ipRateEntry struct {
 }
 
 var (
-	rateMu  sync.Mutex
-	rateMap = map[string]*ipRateEntry{}
+	rateMu      sync.Mutex
+	rateMap     = map[string]*ipRateEntry{}
+	cleanupOnce sync.Once
 )
 
 const (
@@ -44,6 +45,24 @@ const (
 )
 
 func checkContactRateLimit(ip string) bool {
+	// Start the background cleanup goroutine exactly once.
+	cleanupOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(15 * time.Minute)
+			defer t.Stop()
+			for range t.C {
+				rateMu.Lock()
+				now := time.Now()
+				for k, e := range rateMap {
+					if now.After(e.windowEnd) {
+						delete(rateMap, k)
+					}
+				}
+				rateMu.Unlock()
+			}
+		}()
+	})
+
 	rateMu.Lock()
 	defer rateMu.Unlock()
 	now := time.Now()
@@ -59,15 +78,38 @@ func checkContactRateLimit(ip string) bool {
 	return true
 }
 
-func handleContact(cfg Config, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+// sanitizeField strips carriage returns and newlines from user-supplied strings
+// to prevent CRLF injection in email headers.
+func sanitizeField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func handleContact(state *State, cfg Config, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// X-Site-Name is injected by Caddy's reverse_proxy header_up — it is trusted.
+	// X-Site-Name is injected by Caddy's reverse_proxy header_up, but the
+	// dashboard port is network-accessible so we validate it against known sites.
 	siteName := r.Header.Get("X-Site-Name")
 	if siteName == "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	knownSite := false
+	for _, name := range state.AllSiteNames() {
+		if name == siteName {
+			knownSite = true
+			break
+		}
+	}
+	if !knownSite {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -158,13 +200,18 @@ func handleContact(cfg Config, logger *log.Logger, w http.ResponseWriter, r *htt
 }
 
 func sendMailgun(apiKey, mgDomain string, contactCfg *ContactSiteConfig, req contactRequest) error {
-	subject := fmt.Sprintf("Contact from %s", req.Name)
-	if req.Type != "" && req.Type != "ENGAGEMENT_TYPE_" {
-		subject = fmt.Sprintf("Contact from %s — %s", req.Name, req.Type)
+	// Sanitize user-supplied fields before embedding them in email headers.
+	name := sanitizeField(req.Name)
+	email := sanitizeField(req.Email)
+	msgType := sanitizeField(req.Type)
+
+	subject := fmt.Sprintf("Contact from %s", name)
+	if msgType != "" && msgType != "ENGAGEMENT_TYPE_" {
+		subject = fmt.Sprintf("Contact from %s — %s", name, msgType)
 	}
 
 	body := fmt.Sprintf("Name: %s\nEmail: %s\nType: %s\n\n%s",
-		req.Name, req.Email, req.Type, req.Message)
+		name, email, msgType, req.Message)
 
 	from := fmt.Sprintf("contact-form@%s", mgDomain)
 
@@ -173,7 +220,7 @@ func sendMailgun(apiKey, mgDomain string, contactCfg *ContactSiteConfig, req con
 	form.Set("to", contactCfg.To)
 	form.Set("subject", subject)
 	form.Set("text", body)
-	form.Set("h:Reply-To", req.Email)
+	form.Set("h:Reply-To", email)
 
 	endpoint := fmt.Sprintf("https://api.mailgun.net/v3/%s/messages", mgDomain)
 	httpReq, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
