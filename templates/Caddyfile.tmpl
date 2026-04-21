@@ -36,14 +36,14 @@ http://{{.Name}} {
         }
     }
 
-    handle {
-        try_files {path} {path}.html {path}/index.html
-        file_server {
-            hide .DS_Store ._.DS_Store ._*
+    {{if .ContactEnabled}}
+    handle /api/contact {
+            reverse_proxy site-manager:8080 {
+                header_up X-Site-Name "{{.Name}}"
+            }
         }
-    }
+    {{end}}
 
-    log
 }
 
 {{- end}}

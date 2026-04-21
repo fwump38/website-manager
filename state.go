@@ -20,10 +20,14 @@ type State struct {
 }
 
 type SiteView struct {
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
-	HasDNS  bool   `json:"has_dns,omitempty"`
-	HasWWW  bool   `json:"has_www,omitempty"`
+	Name           string `json:"name"`
+	Enabled        bool   `json:"enabled"`
+	HasDNS         bool   `json:"has_dns,omitempty"`
+	HasWWW         bool   `json:"has_www,omitempty"`
+	IsApex         bool   `json:"is_apex"`
+	ContactEnabled bool   `json:"contact_enabled"`
+	ContactTo      string `json:"contact_to,omitempty"`
+	WWWRedirect    bool   `json:"www_redirect"`
 }
 
 func LoadState(path string) (*State, error) {

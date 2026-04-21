@@ -20,18 +20,30 @@ import (
 )
 
 type patchRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled        bool   `json:"enabled"`
+	ContactEnabled bool   `json:"contact_enabled"`
+	ContactTo      string `json:"contact_to"`
+	WWWRedirect    bool   `json:"www_redirect"`
 }
 
-func handleSites(state *State, stateFile string, reconcileCh chan<- struct{}, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
+func handleSites(state *State, sitesDir string, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	apexDomains := map[string]bool{}
+	for _, d := range cfClient.AvailableDomains() {
+		apexDomains[d] = true
+	}
 	sites := state.AllSites()
 	for i := range sites {
-		if sites[i].Enabled && sites[i].HasDNS {
-			sites[i].HasWWW = cfClient.HasWWWForSite(sites[i].Name)
+		siteCfg, _ := loadSiteConfig(sitesDir, sites[i].Name)
+		sites[i].ContactEnabled = siteCfg.ContactEnabled
+		sites[i].ContactTo = siteCfg.ContactTo
+		sites[i].WWWRedirect = siteCfg.WWWRedirect
+		sites[i].IsApex = apexDomains[sites[i].Name]
+		if sites[i].Enabled && sites[i].HasDNS && sites[i].IsApex && siteCfg.WWWRedirect {
+			sites[i].HasWWW = true
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -81,7 +93,7 @@ func dnsIsLive(hostname string) bool {
 	return err == nil && len(addrs) > 0
 }
 
-func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}, cfReconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
+func handleSitePatch(state *State, stateFile, sitesDir string, fileUID, fileGID int, reconcileCh chan<- struct{}, cfReconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -98,6 +110,7 @@ func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
@@ -111,12 +124,32 @@ func handleSitePatch(state *State, stateFile string, reconcileCh chan<- struct{}
 		return
 	}
 
+	// Validate contact fields when contact form is being enabled.
+	if payload.ContactEnabled {
+		if !strings.Contains(payload.ContactTo, "@") || !strings.Contains(payload.ContactTo, ".") {
+			jsonError(w, "contact_to must be a valid email address", http.StatusBadRequest)
+			return
+		}
+	}
+
 	state.SetEnabled(decodedName, payload.Enabled)
 	if err := state.Save(stateFile); err != nil {
 		log.Printf("failed to save state: %v", err)
 		http.Error(w, "failed to save state", http.StatusInternalServerError)
 		return
 	}
+
+	siteCfg := SiteConfig{
+		ContactEnabled: payload.ContactEnabled,
+		ContactTo:      payload.ContactTo,
+		WWWRedirect:    payload.WWWRedirect,
+	}
+	if err := saveSiteConfig(sitesDir, decodedName, siteCfg, fileUID, fileGID); err != nil {
+		log.Printf("failed to save site config for %q: %v", decodedName, err)
+		jsonError(w, "failed to save site config", http.StatusInternalServerError)
+		return
+	}
+
 	sendReconcile(reconcileCh)
 	sendReconcile(cfReconcileCh)
 	w.WriteHeader(http.StatusNoContent)
@@ -168,15 +201,11 @@ func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfR
 		return
 	}
 
-	// Guard: site must exist in state and be disabled.
+	// Guard: site must exist in state.
 	found := false
 	for _, sv := range state.AllSites() {
 		if sv.Name == decodedName {
 			found = true
-			if sv.Enabled {
-				jsonError(w, "site must be disabled before deleting", http.StatusConflict)
-				return
-			}
 			break
 		}
 	}
@@ -194,7 +223,9 @@ func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfR
 		return
 	}
 
-	// Remove from state first, then delete the folder.
+	// If the site is enabled, disable it and reconcile so Caddy + Cloudflare
+	// clean up before the directory is removed.
+	state.SetEnabled(decodedName, false)
 	state.RemoveSite(decodedName)
 	if err := state.Save(stateFile); err != nil {
 		logger.Printf("failed to save state after removing site %q: %v", decodedName, err)

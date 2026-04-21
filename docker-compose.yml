@@ -30,10 +30,11 @@ services:
       - CF_API_TOKEN=${CF_API_TOKEN:-}
       - CF_ACCOUNT_ID=${CF_ACCOUNT_ID:-}
       - CF_TUNNEL_ID=${CF_TUNNEL_ID:-}
-      - CF_ENABLE_WWW_REDIRECT=false
       - CADDY_SERVICE_URL=${CADDY_SERVICE_URL:-http://caddy:80}
       - PUID=${PUID:-99}
       - PGID=${PGID:-100}
+      - MAILGUN_API_KEY=${MAILGUN_API_KEY:-}
+      - MAILGUN_DOMAIN=${MAILGUN_DOMAIN:-}
     depends_on:
       - caddy
 

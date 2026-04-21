@@ -23,7 +23,8 @@ type caddyData struct {
 }
 
 type siteEntry struct {
-	Name string
+	Name           string
+	ContactEnabled bool
 }
 
 // wwwEntry represents an apex domain that should have a www→apex redirect block.
@@ -32,19 +33,16 @@ type wwwEntry struct {
 	Apex    string // e.g. "example.com"
 }
 
-// GenerateCaddyfile writes the Caddyfile from the template. wwwRedirects is a
-// list of apex domain names for which a www.APEX → APEX redirect block should
-// be emitted.
-func (c *CaddyManager) GenerateCaddyfile(sites []string, wwwRedirects []string) error {
+// GenerateCaddyfile writes the Caddyfile from the template. sites includes all
+// known site entries (enabled + disabled). wwwRedirects is a list of apex
+// domain names for which a www.APEX → APEX redirect block should be emitted.
+func (c *CaddyManager) GenerateCaddyfile(sites []siteEntry, wwwRedirects []string) error {
 	tmpl, err := template.ParseFiles(c.TemplatePath)
 	if err != nil {
 		return err
 	}
 
-	data := caddyData{SitesDir: c.SitesDir}
-	for _, site := range sites {
-		data.Sites = append(data.Sites, siteEntry{Name: site})
-	}
+	data := caddyData{SitesDir: c.SitesDir, Sites: sites}
 	for _, apex := range wwwRedirects {
 		data.WWWEntries = append(data.WWWEntries, wwwEntry{
 			WWWName: "www." + apex,

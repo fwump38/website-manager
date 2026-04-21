@@ -15,20 +15,21 @@ import (
 )
 
 type Config struct {
-	SitesDir            string
-	StateFile           string
-	CaddyAdminURL       string
-	CaddyfilePath       string
-	CaddyServiceURL     string
-	DashboardPort       string
-	CFAPIToken          string
-	CFAccountID         string
-	CFTunnelID          string
-	CFTunnelHost        string
-	CFEnableWWWRedirect bool
-	TemplatesDir        string
-	FileUID             int
-	FileGID             int
+	SitesDir        string
+	StateFile       string
+	CaddyAdminURL   string
+	CaddyfilePath   string
+	CaddyServiceURL string
+	DashboardPort   string
+	CFAPIToken      string
+	CFAccountID     string
+	CFTunnelID      string
+	CFTunnelHost    string
+	TemplatesDir    string
+	FileUID         int
+	FileGID         int
+	MailgunAPIKey   string
+	MailgunDomain   string
 }
 
 func parseEnvInt(key string, defaultVal int) int {
@@ -42,20 +43,21 @@ func parseEnvInt(key string, defaultVal int) int {
 
 func loadConfig() Config {
 	cfg := Config{
-		SitesDir:            os.Getenv("SITES_DIR"),
-		StateFile:           os.Getenv("STATE_FILE"),
-		CaddyAdminURL:       os.Getenv("CADDY_ADMIN_URL"),
-		CaddyfilePath:       os.Getenv("CADDYFILE_OUTPUT"),
-		CaddyServiceURL:     os.Getenv("CADDY_SERVICE_URL"),
-		DashboardPort:       os.Getenv("DASHBOARD_PORT"),
-		CFAPIToken:          os.Getenv("CF_API_TOKEN"),
-		CFAccountID:         os.Getenv("CF_ACCOUNT_ID"),
-		CFTunnelID:          os.Getenv("CF_TUNNEL_ID"),
-		CFTunnelHost:        os.Getenv("CF_TUNNEL_HOSTNAME"),
-		CFEnableWWWRedirect: os.Getenv("CF_ENABLE_WWW_REDIRECT") == "true",
-		TemplatesDir:        "templates",
-		FileUID:             parseEnvInt("PUID", 99),
-		FileGID:             parseEnvInt("PGID", 100),
+		SitesDir:        os.Getenv("SITES_DIR"),
+		StateFile:       os.Getenv("STATE_FILE"),
+		CaddyAdminURL:   os.Getenv("CADDY_ADMIN_URL"),
+		CaddyfilePath:   os.Getenv("CADDYFILE_OUTPUT"),
+		CaddyServiceURL: os.Getenv("CADDY_SERVICE_URL"),
+		DashboardPort:   os.Getenv("DASHBOARD_PORT"),
+		CFAPIToken:      os.Getenv("CF_API_TOKEN"),
+		CFAccountID:     os.Getenv("CF_ACCOUNT_ID"),
+		CFTunnelID:      os.Getenv("CF_TUNNEL_ID"),
+		CFTunnelHost:    os.Getenv("CF_TUNNEL_HOSTNAME"),
+		TemplatesDir:    "templates",
+		FileUID:         parseEnvInt("PUID", 99),
+		FileGID:         parseEnvInt("PGID", 100),
+		MailgunAPIKey:   os.Getenv("MAILGUN_API_KEY"),
+		MailgunDomain:   os.Getenv("MAILGUN_DOMAIN"),
 	}
 
 	if cfg.SitesDir == "" {
@@ -132,7 +134,7 @@ func main() {
 	mux.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handleSites(state, cfg.StateFile, reconcileCh, cfClient, w, r)
+			handleSites(state, cfg.SitesDir, cfClient, w, r)
 		case http.MethodPost:
 			handleCreateSite(state, cfg.StateFile, cfg.SitesDir, cfClient, reconcileCh, cfg.FileUID, cfg.FileGID, logger, w, r)
 		default:
@@ -142,7 +144,7 @@ func main() {
 	mux.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPatch:
-			handleSitePatch(state, cfg.StateFile, reconcileCh, cfReconcileCh, w, r)
+			handleSitePatch(state, cfg.StateFile, cfg.SitesDir, cfg.FileUID, cfg.FileGID, reconcileCh, cfReconcileCh, w, r)
 		case http.MethodDelete:
 			handleDeleteSite(state, cfg.StateFile, cfg.SitesDir, reconcileCh, cfReconcileCh, logger, w, r)
 		case http.MethodPost:
@@ -154,6 +156,9 @@ func main() {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	})
+	mux.HandleFunc("/api/contact", func(w http.ResponseWriter, r *http.Request) {
+		handleContact(cfg, logger, w, r)
 	})
 	mux.HandleFunc("/api/domains", func(w http.ResponseWriter, r *http.Request) {
 		handleDomains(cfClient, w, r)
@@ -219,13 +224,19 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
 	enabledSites := state.EnabledSites()
 	allSites := state.AllSiteNames()
+	var siteEntries []siteEntry
 	var wwwRedirects []string
+	for _, site := range allSites {
+		siteCfg, _ := loadSiteConfig(cfg.SitesDir, site)
+		siteEntries = append(siteEntries, siteEntry{Name: site, ContactEnabled: siteCfg.ContactEnabled})
+	}
 	for _, site := range enabledSites {
-		if cf.HasWWWForSite(site) {
+		siteCfg, _ := loadSiteConfig(cfg.SitesDir, site)
+		if siteCfg.WWWRedirect {
 			wwwRedirects = append(wwwRedirects, site)
 		}
 	}
-	if err := caddy.GenerateCaddyfile(allSites, wwwRedirects); err != nil {
+	if err := caddy.GenerateCaddyfile(siteEntries, wwwRedirects); err != nil {
 		logger.Printf("failed to generate caddyfile: %v", err)
 		return
 	}
@@ -240,7 +251,7 @@ func reconcileCloudflare(state *State, cfg Config, cf *CloudflareClient, logger 
 		return
 	}
 	enabledSites := state.EnabledSites()
-	if err := cf.Reconcile(state, cfg.StateFile, enabledSites); err != nil {
+	if err := cf.Reconcile(state, cfg.StateFile, cfg.SitesDir, enabledSites); err != nil {
 		logger.Printf("failed to reconcile cloudflare: %v", err)
 	}
 }

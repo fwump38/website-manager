@@ -16,12 +16,11 @@ import (
 )
 
 type CloudflareConfig struct {
-	APIToken          string
-	AccountID         string
-	TunnelID          string
-	TunnelHost        string
-	EnableWWWRedirect bool
-	CaddyServiceURL   string
+	APIToken        string
+	AccountID       string
+	TunnelID        string
+	TunnelHost      string
+	CaddyServiceURL string
 }
 
 type CloudflareClient struct {
@@ -40,12 +39,11 @@ func NewCloudflareClient(cfg Config, logger *log.Logger) *CloudflareClient {
 		client: client,
 		logger: logger,
 		cfg: CloudflareConfig{
-			APIToken:          cfg.CFAPIToken,
-			AccountID:         cfg.CFAccountID,
-			TunnelID:          cfg.CFTunnelID,
-			TunnelHost:        cfg.CFTunnelHost,
-			EnableWWWRedirect: cfg.CFEnableWWWRedirect,
-			CaddyServiceURL:   cfg.CaddyServiceURL,
+			APIToken:        cfg.CFAPIToken,
+			AccountID:       cfg.CFAccountID,
+			TunnelID:        cfg.CFTunnelID,
+			TunnelHost:      cfg.CFTunnelHost,
+			CaddyServiceURL: cfg.CaddyServiceURL,
 		},
 	}
 }
@@ -88,15 +86,18 @@ func (c *CloudflareClient) getZoneMap(ctx context.Context) map[string]string {
 	return m
 }
 
-// HasWWWForSite reports whether the www redirect is enabled for the given site
-// name. This is true only for apex domains when EnableWWWRedirect is on.
-func (c *CloudflareClient) HasWWWForSite(siteName string) bool {
-	if !c.cfg.EnableWWWRedirect || strings.HasPrefix(siteName, "www.") {
+// HasWWWForSite reports whether the www redirect is enabled for the given
+// apex-domain site based on its site.json configuration.
+func (c *CloudflareClient) HasWWWForSite(siteName, sitesDir string) bool {
+	if strings.HasPrefix(siteName, "www.") {
 		return false
 	}
 	zoneMap := c.getZoneMap(context.Background())
-	_, isApex := zoneMap[strings.ToLower(siteName)]
-	return isApex
+	if _, isApex := zoneMap[strings.ToLower(siteName)]; !isApex {
+		return false
+	}
+	siteCfg, _ := loadSiteConfig(sitesDir, siteName)
+	return siteCfg.WWWRedirect
 }
 
 // AvailableDomains returns the sorted list of domain names this client has
@@ -128,7 +129,7 @@ func (c *CloudflareClient) zoneIDForHostname(ctx context.Context, hostname strin
 	return zoneMap[bestMatch], true
 }
 
-func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSites []string) error {
+func (c *CloudflareClient) Reconcile(state *State, stateFile string, sitesDir string, enabledSites []string) error {
 	ctx := context.Background()
 	c.logger.Printf("Starting Cloudflare reconciliation for enabled sites: %v", enabledSites)
 	enabledMap := map[string]bool{}
@@ -145,7 +146,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	// Ensure DNS for each enabled site and its derived hostnames (e.g. www variant).
 	// HasDNS is tracked on the base site name only so it survives directory sync.
 	for _, site := range enabledSites {
-		for _, hostname := range c.getManagedHostnames([]string{site}, allSites) {
+		for _, hostname := range c.getManagedHostnames([]string{site}, allSites, sitesDir) {
 			c.logger.Printf("Ensuring DNS for %s", hostname)
 			if err := c.ensureDNS(ctx, hostname); err != nil {
 				return err
@@ -160,7 +161,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
 	for _, site := range previouslyManagedSites {
 		if !enabledMap[site] {
-			for _, hostname := range c.getManagedHostnames([]string{site}, allSites) {
+			for _, hostname := range c.getManagedHostnames([]string{site}, allSites, sitesDir) {
 				c.logger.Printf("Deleting DNS for %s", hostname)
 				if err := c.deleteDNS(ctx, hostname); err != nil {
 					return err
@@ -174,7 +175,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, enabledSite
 	}
 
 	c.logger.Printf("Reconciling tunnel ingress")
-	if err := c.reconcileIngress(ctx, enabledSites, allSites, previouslyManagedSites); err != nil {
+	if err := c.reconcileIngress(ctx, sitesDir, enabledSites, allSites, previouslyManagedSites); err != nil {
 		return err
 	}
 	return nil
@@ -220,7 +221,7 @@ func (c *CloudflareClient) getDNSRecordID(ctx context.Context, zoneID, hostname 
 	return page.Result[0].ID, nil
 }
 
-func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites []string) []string {
+func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites []string, sitesDir string) []string {
 	zoneMap := c.getZoneMap(context.Background())
 	hostnames := make([]string, 0, len(enabledSites)*2)
 	hostSet := make(map[string]bool)
@@ -233,16 +234,18 @@ func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites [
 			hostnames = append(hostnames, site)
 			hostSet[site] = true
 		}
-		// Only add a www. redirect for apex domains (the site name itself is a
-		// configured zone root). Subdomains like foo.example.com must not get a
-		// www.foo.example.com entry. Also skip if www.SITE already exists as a
-		// managed folder.
-		if c.cfg.EnableWWWRedirect && !strings.HasPrefix(site, "www.") {
+		// Only add a www. entry for apex domains whose site.json has WWWRedirect=true.
+		// Subdomains like foo.example.com must not get a www.foo.example.com entry.
+		// Also skip if www.SITE already exists as a managed folder.
+		if !strings.HasPrefix(site, "www.") {
 			if _, isApex := zoneMap[strings.ToLower(site)]; isApex {
-				www := "www." + site
-				if !allSiteSet[strings.ToLower(www)] && !hostSet[www] {
-					hostnames = append(hostnames, www)
-					hostSet[www] = true
+				siteCfg, _ := loadSiteConfig(sitesDir, site)
+				if siteCfg.WWWRedirect {
+					www := "www." + site
+					if !allSiteSet[strings.ToLower(www)] && !hostSet[www] {
+						hostnames = append(hostnames, www)
+						hostSet[www] = true
+					}
 				}
 			}
 		}
@@ -258,17 +261,17 @@ func (c *CloudflareClient) getTunnelConfig(ctx context.Context) (*zero_trust.Tun
 	)
 }
 
-func (c *CloudflareClient) reconcileIngress(ctx context.Context, enabledSites []string, allSites []string, previouslyManagedSites []string) error {
+func (c *CloudflareClient) reconcileIngress(ctx context.Context, sitesDir string, enabledSites []string, allSites []string, previouslyManagedSites []string) error {
 	current, err := c.getTunnelConfig(ctx)
 	if err != nil {
 		return err
 	}
-	managedHostnames := c.getManagedHostnames(enabledSites, allSites)
+	managedHostnames := c.getManagedHostnames(enabledSites, allSites, sitesDir)
 
 	// Build the set of all hostnames this tool owns: currently enabled and
 	// previously managed (HasDNS=true). Rules for owned hostnames are removed
 	// so disabled sites get cleaned from the tunnel, not left behind.
-	ownedHostnames := c.getManagedHostnames(append(enabledSites, previouslyManagedSites...), allSites)
+	ownedHostnames := c.getManagedHostnames(append(enabledSites, previouslyManagedSites...), allSites, sitesDir)
 	ownedSet := make(map[string]bool)
 	for _, h := range ownedHostnames {
 		ownedSet[h] = true
