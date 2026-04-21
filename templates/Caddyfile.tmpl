@@ -44,6 +44,14 @@ http://{{.Name}} {
         }
     {{end}}
 
+    handle {
+        try_files {path} {path}.html {path}/index.html
+        file_server {
+            hide .DS_Store ._.DS_Store ._*
+        }
+    }
+
+    log
 }
 
 {{- end}}
