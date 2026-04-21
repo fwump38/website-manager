@@ -166,11 +166,14 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:              cfg.DashboardBind + ":" + cfg.DashboardPort,
-		Handler:           mux,
+		Addr:    cfg.DashboardBind + ":" + cfg.DashboardPort,
+		Handler: mux,
+		// ReadHeaderTimeout guards against slow-header (Slowloris) attacks.
+		// ReadTimeout and WriteTimeout are intentionally omitted: this server
+		// contains reverse-proxy handlers (preview) that stream responses from
+		// Caddy over the same connection; a server-level write deadline would
+		// race with the proxy's response copy and close connections prematurely.
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 

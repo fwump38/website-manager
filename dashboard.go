@@ -149,13 +149,20 @@ func handleSitePatch(state *State, sitesDir string, fileUID, fileGID int, reconc
 		}
 	}
 
-	siteCfg := SiteConfig{
-		Enabled:        payload.Enabled,
-		ContactEnabled: payload.ContactEnabled,
-		ContactTo:      payload.ContactTo,
-		WWWRedirect:    payload.WWWRedirect,
+	// Read-modify-write: preserve fields managed outside this endpoint (e.g.
+	// HasDNS, which is written by the Cloudflare reconciler) so they are not
+	// silently cleared when the user toggles or edits a site.
+	existingCfg, err := loadSiteConfig(sitesDir, decodedName)
+	if err != nil {
+		log.Printf("failed to load existing site config for %q: %v", decodedName, err)
+		jsonError(w, "failed to load site config", http.StatusInternalServerError)
+		return
 	}
-	if err := saveSiteConfig(sitesDir, decodedName, siteCfg, fileUID, fileGID); err != nil {
+	existingCfg.Enabled = payload.Enabled
+	existingCfg.ContactEnabled = payload.ContactEnabled
+	existingCfg.ContactTo = payload.ContactTo
+	existingCfg.WWWRedirect = payload.WWWRedirect
+	if err := saveSiteConfig(sitesDir, decodedName, existingCfg, fileUID, fileGID); err != nil {
 		log.Printf("failed to save site config for %q: %v", decodedName, err)
 		jsonError(w, "failed to save site config", http.StatusInternalServerError)
 		return
