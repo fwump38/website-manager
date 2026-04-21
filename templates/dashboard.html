@@ -197,14 +197,26 @@ dialog.optimize-dialog { max-width: 640px; }
     </label>
   </div>
 
-  <!-- WWW redirect toggle (hidden for subdomains) -->
+  <!-- WWW serve toggle -->
   <div class="toggle-row" id="wwwToggleRow">
     <div>
-      <div class="toggle-label">Redirect www → apex</div>
-      <div class="toggle-desc">Add www.domain DNS + redirect to apex</div>
+      <div class="toggle-label" id="wwwToggleLabel">Also serve at www</div>
+      <div class="toggle-desc" id="wwwToggleDesc">Serve the same content at www.domain</div>
     </div>
     <label class="pill-toggle">
       <input type="checkbox" id="editWWW" />
+      <span class="track"></span>
+    </label>
+  </div>
+
+  <!-- Apex serve toggle (non-apex sites only) -->
+  <div class="toggle-row" id="apexToggleRow" style="display:none">
+    <div>
+      <div class="toggle-label" id="apexToggleLabel">Also serve at apex</div>
+      <div class="toggle-desc" id="apexToggleDesc">Serve the same content at the bare domain</div>
+    </div>
+    <label class="pill-toggle">
+      <input type="checkbox" id="editApex" />
       <span class="track"></span>
     </label>
   </div>
@@ -420,6 +432,7 @@ function renderSites() {
       <div class="grid">
         ${domainSites.map(site => {
           const wwwBadge = site.has_www ? '<span class="badge www">www</span>' : '';
+          const apexBadge = site.has_apex_alias ? '<span class="badge www">apex</span>' : '';
           const liveBadgeId = `dns-badge-${CSS.escape(site.name)}`;
           const liveBadge = site.enabled
             ? `<span class="badge checking" id="${liveBadgeId}">Checking DNS…</span>`
@@ -430,6 +443,7 @@ function renderSites() {
             <div class="badges">
               <span class="badge ${site.enabled ? 'enabled' : 'disabled'}">${site.enabled ? 'Enabled' : 'Disabled'}</span>
               ${wwwBadge}
+              ${apexBadge}
               ${liveBadge}
             </div>
             <div class="card-actions">
@@ -486,6 +500,20 @@ async function quickToggle(checkbox) {
   if (!site) return;
   checkbox.disabled = true;
   try {
+    if (checkbox.checked) {
+      const conflicts = detectEnableConflicts(siteName);
+      if (conflicts.length > 0) {
+        const names = conflicts.map(c => c.site).join(', ');
+        const ok = confirm(
+          `Enabling ${siteName} conflicts with alias settings on: ${names}.\n\n` +
+          `Those alias flags will be cleared. Continue?`
+        );
+        if (!ok) {
+          checkbox.checked = false;
+          return;
+        }
+      }
+    }
     const res = await fetch(`/api/sites/${encodeURIComponent(siteName)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -493,10 +521,14 @@ async function quickToggle(checkbox) {
         enabled: checkbox.checked,
         contact_enabled: site.contact_enabled || false,
         contact_to: site.contact_to || '',
-        www_redirect: site.www_redirect || false,
+        serve_at_www: site.serve_at_www || false,
+        serve_at_apex: site.serve_at_apex || false,
       })
     });
     if (!res.ok) throw new Error('update failed');
+    if (checkbox.checked) {
+      await clearConflictingAliases(siteName);
+    }
     await fetchSites();
   } catch (err) {
     showToast(err.message);
@@ -510,7 +542,13 @@ async function quickToggle(checkbox) {
 const editDialog = document.getElementById('editDialog');
 const editEnabled = document.getElementById('editEnabled');
 const editWWW = document.getElementById('editWWW');
+const editApex = document.getElementById('editApex');
 const wwwToggleRow = document.getElementById('wwwToggleRow');
+const wwwToggleLabel = document.getElementById('wwwToggleLabel');
+const wwwToggleDesc = document.getElementById('wwwToggleDesc');
+const apexToggleRow = document.getElementById('apexToggleRow');
+const apexToggleLabel = document.getElementById('apexToggleLabel');
+const apexToggleDesc = document.getElementById('apexToggleDesc');
 const editContactEnabled = document.getElementById('editContactEnabled');
 const contactFields = document.getElementById('contactFields');
 const editContactTo = document.getElementById('editContactTo');
@@ -533,10 +571,34 @@ function openEditModal(siteName) {
   editEnabled.checked = !!site.enabled;
   editContactEnabled.checked = !!site.contact_enabled;
   editContactTo.value = site.contact_to || '';
-  editWWW.checked = !!site.www_redirect;
 
-  // Show WWW toggle only for apex domains
-  wwwToggleRow.style.display = site.is_apex ? '' : 'none';
+  const apex = apexDomain(siteName);
+  const wwwHost = 'www.' + apex;
+  const wwwSiteExists = allSites.some(s => s.name === wwwHost);
+  const apexSiteExists = allSites.some(s => s.name === apex && s.name !== siteName);
+
+  // WWW toggle — always visible, disabled if www.{apex} already exists as a site
+  wwwToggleLabel.textContent = `Also serve at ${wwwHost}`;
+  wwwToggleDesc.textContent = wwwSiteExists
+    ? `${wwwHost} already exists as a separate site`
+    : `Serve the same content at ${wwwHost} (no redirect)`;
+  editWWW.checked = wwwSiteExists ? false : !!site.serve_at_www;
+  editWWW.disabled = wwwSiteExists;
+  wwwToggleRow.style.display = '';
+
+  // Apex toggle — only for non-apex sites, disabled if apex already exists as a site
+  if (!site.is_apex) {
+    apexToggleLabel.textContent = `Also serve at ${apex}`;
+    apexToggleDesc.textContent = apexSiteExists
+      ? `${apex} already exists as a separate site`
+      : `Serve the same content at ${apex} (no redirect)`;
+    editApex.checked = apexSiteExists ? false : !!site.serve_at_apex;
+    editApex.disabled = apexSiteExists;
+    apexToggleRow.style.display = '';
+  } else {
+    editApex.checked = false;
+    apexToggleRow.style.display = 'none';
+  }
 
   // Show/hide contact email fields
   contactFields.style.display = site.contact_enabled ? '' : 'none';
@@ -573,13 +635,27 @@ editSave.addEventListener('click', async () => {
     enabled: editEnabled.checked,
     contact_enabled: editContactEnabled.checked,
     contact_to: editContactTo.value.trim(),
-    www_redirect: editWWW.checked,
+    serve_at_www: editWWW.checked,
+    serve_at_apex: editApex.checked,
   };
 
   if (payload.contact_enabled) {
     if (!payload.contact_to.includes('@') || !payload.contact_to.includes('.')) {
       editError.textContent = '"Deliver to" must be a valid email address.';
       return;
+    }
+  }
+
+  // Warn about conflicts when enabling the site
+  if (payload.enabled) {
+    const conflicts = detectEnableConflicts(editingSite);
+    if (conflicts.length > 0) {
+      const names = conflicts.map(c => c.site).join(', ');
+      const ok = confirm(
+        `Enabling ${editingSite} conflicts with alias settings on: ${names}.\n\n` +
+        `Those alias flags will be cleared. Continue?`
+      );
+      if (!ok) return;
     }
   }
 
@@ -594,6 +670,9 @@ editSave.addEventListener('click', async () => {
       const data = await res.json().catch(() => ({}));
       editError.textContent = data.error || 'Save failed.';
       return;
+    }
+    if (payload.enabled) {
+      await clearConflictingAliases(editingSite);
     }
     editDialog.close();
     editingSite = null;
@@ -711,6 +790,7 @@ newSiteButton.addEventListener('click', () => {
   sitePreview.textContent = '';
   modalError.textContent = '';
   submitCreate.disabled = false;
+  updateNewSitePreview();
   dialog.showModal();
 });
 
@@ -731,13 +811,26 @@ function computeSiteName() {
   return subdomain ? `${subdomain}.${domain}` : domain;
 }
 
-subdomainInput.addEventListener('input', () => {
-  sitePreview.textContent = computeSiteName() ? `→ ${computeSiteName()}` : '';
-});
+function updateNewSitePreview() {
+  const name = computeSiteName();
+  sitePreview.textContent = name ? `→ ${name}` : '';
+  if (name) {
+    const conflicts = detectNewSiteConflicts(name);
+    if (conflicts.length > 0) {
+      const conflictNames = conflicts.map(c => c.site).join(', ');
+      modalError.textContent =
+        `⚠ ${conflictNames} currently also serves at this address. ` +
+        `Creating this site won't break anything, but enabling it may conflict with that alias.`;
+    } else {
+      modalError.textContent = '';
+    }
+  } else {
+    modalError.textContent = '';
+  }
+}
 
-domainSelect.addEventListener('change', () => {
-  sitePreview.textContent = computeSiteName() ? `→ ${computeSiteName()}` : '';
-});
+subdomainInput.addEventListener('input', updateNewSitePreview);
+domainSelect.addEventListener('change', updateNewSitePreview);
 
 submitCreate.addEventListener('click', async () => {
   modalError.textContent = '';
@@ -770,6 +863,68 @@ submitCreate.addEventListener('click', async () => {
     submitCreate.disabled = false;
   }
 });
+
+// ── Alias conflict helpers ─────────────────────────────────────────────────
+// Returns [{site, field}] for any existing site whose serve_at_www or
+// serve_at_apex alias resolves to `siteName`.
+function detectEnableConflicts(siteName) {
+  const conflicts = [];
+  for (const s of allSites) {
+    if (s.name === siteName) continue;
+    const apex = apexDomain(s.name);
+    if (s.serve_at_www && ('www.' + apex) === siteName) {
+      conflicts.push({ site: s.name, field: 'serve_at_www' });
+    }
+    if (s.serve_at_apex && apex === siteName && s.name !== siteName) {
+      conflicts.push({ site: s.name, field: 'serve_at_apex' });
+    }
+  }
+  return conflicts;
+}
+
+// Returns [{site, field}] for sites that would conflict with creating `newName`.
+function detectNewSiteConflicts(newName) {
+  const conflicts = [];
+  for (const s of allSites) {
+    const apex = apexDomain(s.name);
+    if (s.serve_at_www && ('www.' + apex) === newName) {
+      conflicts.push({ site: s.name, field: 'serve_at_www' });
+    }
+    if (s.serve_at_apex && apex === newName && s.name !== newName) {
+      conflicts.push({ site: s.name, field: 'serve_at_apex' });
+    }
+  }
+  return conflicts;
+}
+
+// Clears serve_at_www / serve_at_apex on sites that conflict with `siteName`.
+async function clearConflictingAliases(siteName) {
+  const conflicts = detectEnableConflicts(siteName);
+  for (const c of conflicts) {
+    const s = allSites.find(x => x.name === c.site);
+    if (!s) continue;
+    const patch = {
+      enabled: s.enabled,
+      contact_enabled: s.contact_enabled || false,
+      contact_to: s.contact_to || '',
+      serve_at_www: c.field === 'serve_at_www' ? false : (s.serve_at_www || false),
+      serve_at_apex: c.field === 'serve_at_apex' ? false : (s.serve_at_apex || false),
+    };
+    try {
+      await fetch(`/api/sites/${encodeURIComponent(c.site)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+    } catch {
+      // best-effort; main operation already succeeded
+    }
+  }
+  if (conflicts.length > 0) {
+    const names = conflicts.map(c => c.site).join(', ');
+    showToast(`Cleared conflicting alias on: ${names}.`);
+  }
+}
 
 // ── Optimize images ────────────────────────────────────────────────────────
 const optimizeDialog = document.getElementById('optimizeResultsDialog');

@@ -86,18 +86,13 @@ func (c *CloudflareClient) getZoneMap(ctx context.Context) map[string]string {
 	return m
 }
 
-// HasWWWForSite reports whether the www redirect is enabled for the given
-// apex-domain site based on its site.json configuration.
+// HasWWWForSite reports whether the site is configured to also serve at www.
 func (c *CloudflareClient) HasWWWForSite(siteName, sitesDir string) bool {
 	if strings.HasPrefix(siteName, "www.") {
 		return false
 	}
-	zoneMap := c.getZoneMap(context.Background())
-	if _, isApex := zoneMap[strings.ToLower(siteName)]; !isApex {
-		return false
-	}
 	siteCfg, _ := loadSiteConfig(sitesDir, siteName)
-	return siteCfg.WWWRedirect
+	return siteCfg.ServeAtWWW
 }
 
 // AvailableDomains returns the sorted list of domain names this client has
@@ -205,8 +200,7 @@ func (c *CloudflareClient) getDNSRecordID(ctx context.Context, zoneID, hostname 
 }
 
 func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites []string, sitesDir string) []string {
-	zoneMap := c.getZoneMap(context.Background())
-	hostnames := make([]string, 0, len(enabledSites)*2)
+	hostnames := make([]string, 0, len(enabledSites)*3)
 	hostSet := make(map[string]bool)
 	allSiteSet := make(map[string]bool)
 	for _, s := range allSites {
@@ -217,19 +211,21 @@ func (c *CloudflareClient) getManagedHostnames(enabledSites []string, allSites [
 			hostnames = append(hostnames, site)
 			hostSet[site] = true
 		}
-		// Only add a www. entry for apex domains whose site.json has WWWRedirect=true.
-		// Subdomains like foo.example.com must not get a www.foo.example.com entry.
-		// Also skip if www.SITE already exists as a managed folder.
-		if !strings.HasPrefix(site, "www.") {
-			if _, isApex := zoneMap[strings.ToLower(site)]; isApex {
-				siteCfg, _ := loadSiteConfig(sitesDir, site)
-				if siteCfg.WWWRedirect {
-					www := "www." + site
-					if !allSiteSet[strings.ToLower(www)] && !hostSet[www] {
-						hostnames = append(hostnames, www)
-						hostSet[www] = true
-					}
-				}
+		apex := apexOf(site)
+		wwwHost := "www." + apex
+		siteCfg, _ := loadSiteConfig(sitesDir, site)
+		// ServeAtWWW: also serve at www.{apex} — skip if www.{apex} is itself a managed site.
+		if siteCfg.ServeAtWWW && !strings.HasPrefix(site, "www.") {
+			if !allSiteSet[strings.ToLower(wwwHost)] && !hostSet[wwwHost] {
+				hostnames = append(hostnames, wwwHost)
+				hostSet[wwwHost] = true
+			}
+		}
+		// ServeAtApex: also serve at {apex} — only for non-apex sites, skip if apex is a managed site.
+		if siteCfg.ServeAtApex && site != apex {
+			if !allSiteSet[strings.ToLower(apex)] && !hostSet[apex] {
+				hostnames = append(hostnames, apex)
+				hostSet[apex] = true
 			}
 		}
 	}

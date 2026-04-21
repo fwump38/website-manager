@@ -5,7 +5,7 @@
 
 {{- if .Sites}}
 {{- range .Sites}}
-http://{{.Name}} {
+http://{{.Name}}{{range .ExtraHosts}}, http://{{.}}{{end}} {
     root * {{$.SitesDir}}/{{.Name}}
 
     encode gzip
@@ -52,12 +52,6 @@ http://{{.Name}} {
     }
 
     log
-}
-
-{{- end}}
-{{- range .WWWEntries}}
-http://{{.WWWName}} {
-    redir http://{{.Apex}}{uri} permanent
 }
 
 {{- end}}

@@ -2,19 +2,72 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 )
 
 // SiteConfig holds all per-site configuration persisted as {sitesDir}/{siteName}/site.json.
 // This is the single source of truth for both operational state (enabled, has_dns)
-// and user-managed settings (contact form, www redirect).
+// and user-managed settings (contact form, alias serving).
 type SiteConfig struct {
 	Enabled        bool   `json:"enabled"`
 	HasDNS         bool   `json:"has_dns,omitempty"`
 	ContactEnabled bool   `json:"contact_enabled"`
 	ContactTo      string `json:"contact_to,omitempty"`
-	WWWRedirect    bool   `json:"www_redirect"`
+	// ServeAtWWW makes the site also serve at www.{apex} (no redirect — same content).
+	// Applies to apex domains and subdomains alike; www always refers to the apex's www.
+	ServeAtWWW bool `json:"serve_at_www"`
+	// ServeAtApex makes a non-apex site also serve at its bare apex domain.
+	ServeAtApex bool `json:"serve_at_apex"`
+}
+
+// migrateSiteConfigs rewrites any site.json that still uses the legacy
+// "www_redirect" key, replacing it with "serve_at_www". Safe to call on
+// every startup; it is a no-op when no migration is needed.
+func migrateSiteConfigs(sitesDir string) {
+	entries, err := os.ReadDir(sitesDir)
+	if err != nil {
+		log.Printf("migrate: cannot read sites dir: %v", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(sitesDir, e.Name(), "site.json")
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue // file may not exist yet
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue
+		}
+		v, hasPrev := m["www_redirect"]
+		if !hasPrev {
+			continue // already migrated or never had the key
+		}
+		delete(m, "www_redirect")
+		if b, ok := v.(bool); ok && b {
+			m["serve_at_www"] = true
+		}
+		out, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			log.Printf("migrate: marshal error for %s: %v", e.Name(), err)
+			continue
+		}
+		tmp := p + ".tmp"
+		if err := os.WriteFile(tmp, out, 0o644); err != nil {
+			log.Printf("migrate: write error for %s: %v", e.Name(), err)
+			continue
+		}
+		if err := os.Rename(tmp, p); err != nil {
+			log.Printf("migrate: rename error for %s: %v", e.Name(), err)
+			continue
+		}
+		log.Printf("migrate: %s migrated www_redirect → serve_at_www", e.Name())
+	}
 }
 
 // loadSiteConfig reads the site.json for the given site. Returns a zero-value

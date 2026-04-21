@@ -23,7 +23,8 @@ type patchRequest struct {
 	Enabled        bool   `json:"enabled"`
 	ContactEnabled bool   `json:"contact_enabled"`
 	ContactTo      string `json:"contact_to"`
-	WWWRedirect    bool   `json:"www_redirect"`
+	ServeAtWWW     bool   `json:"serve_at_www"`
+	ServeAtApex    bool   `json:"serve_at_apex"`
 }
 
 func handleSites(state *State, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
@@ -38,8 +39,11 @@ func handleSites(state *State, cfClient *CloudflareClient, w http.ResponseWriter
 	sites := state.AllSites()
 	for i := range sites {
 		sites[i].IsApex = apexDomains[sites[i].Name]
-		if sites[i].Enabled && sites[i].HasDNS && sites[i].IsApex && sites[i].WWWRedirect {
+		if sites[i].Enabled && sites[i].ServeAtWWW {
 			sites[i].HasWWW = true
+		}
+		if sites[i].Enabled && sites[i].ServeAtApex && !sites[i].IsApex {
+			sites[i].HasApexAlias = true
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -161,7 +165,8 @@ func handleSitePatch(state *State, sitesDir string, fileUID, fileGID int, reconc
 	existingCfg.Enabled = payload.Enabled
 	existingCfg.ContactEnabled = payload.ContactEnabled
 	existingCfg.ContactTo = payload.ContactTo
-	existingCfg.WWWRedirect = payload.WWWRedirect
+	existingCfg.ServeAtWWW = payload.ServeAtWWW
+	existingCfg.ServeAtApex = payload.ServeAtApex
 	if err := saveSiteConfig(sitesDir, decodedName, existingCfg, fileUID, fileGID); err != nil {
 		log.Printf("failed to save site config for %q: %v", decodedName, err)
 		jsonError(w, "failed to save site config", http.StatusInternalServerError)

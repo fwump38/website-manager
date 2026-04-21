@@ -22,10 +22,12 @@ type SiteView struct {
 	Enabled        bool   `json:"enabled"`
 	HasDNS         bool   `json:"has_dns,omitempty"`
 	HasWWW         bool   `json:"has_www,omitempty"`
+	HasApexAlias   bool   `json:"has_apex_alias,omitempty"`
 	IsApex         bool   `json:"is_apex"`
 	ContactEnabled bool   `json:"contact_enabled"`
 	ContactTo      string `json:"contact_to,omitempty"`
-	WWWRedirect    bool   `json:"www_redirect"`
+	ServeAtWWW     bool   `json:"serve_at_www"`
+	ServeAtApex    bool   `json:"serve_at_apex"`
 }
 
 // NewState returns an empty State rooted at sitesDir.
@@ -120,7 +122,8 @@ func (s *State) AllSites() []SiteView {
 			HasDNS:         cfg.HasDNS,
 			ContactEnabled: cfg.ContactEnabled,
 			ContactTo:      cfg.ContactTo,
-			WWWRedirect:    cfg.WWWRedirect,
+			ServeAtWWW:     cfg.ServeAtWWW,
+			ServeAtApex:    cfg.ServeAtApex,
 		})
 	}
 	return out

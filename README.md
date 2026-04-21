@@ -114,15 +114,29 @@ Mailgun uses **TXT records** (SPF/DKIM) for sending verification, not MX records
 - **Field length limits** — name ≤ 200 chars, email ≤ 320, engagement type ≤ 200, message ≤ 5,000.
 - **`X-Site-Name` trust boundary** — the header is injected by Caddy inside the Docker network; it is never accepted from external requests directly.
 
-## www redirect
+## Alias serving (www and apex)
 
-For apex-domain sites, you can enable the **Redirect www → apex** toggle in the site's Edit modal. When enabled, the site-manager:
+The Edit modal for each site exposes two alias toggles. Aliases serve the **same content** at the additional hostname — there is no redirect.
 
-- Adds a `www.<domain>` Caddy vhost that permanently redirects to the apex domain.
-- Adds a `www.<domain>` DNS CNAME record in Cloudflare pointing at the Tunnel.
-- Adds a `www.<domain>` Tunnel ingress rule.
+### Also serve at www
 
-The toggle is hidden for subdomain sites (e.g. `blog.example.com`). If a dedicated `www.<domain>` directory already exists in the sites folder it is treated as an independent site and the toggle has no effect.
+Available for any site. When enabled, the site-manager:
+
+- Adds `www.<apex>` as an additional hostname to the site's Caddy block (e.g. `blog.example.com` gains `www.example.com`).
+- Adds a `www.<apex>` DNS CNAME record in Cloudflare pointing at the Tunnel.
+- Adds a `www.<apex>` Tunnel ingress rule.
+
+The toggle is disabled (with an explanatory note) if a dedicated `www.<apex>` directory already exists in the sites folder — that directory is treated as an independent site.
+
+### Also serve at apex
+
+Available for non-apex sites only (e.g. `blog.example.com` can also serve at `example.com`). When enabled, the site-manager applies the same Caddy, DNS, and Tunnel changes as above but for the bare apex domain.
+
+The toggle is disabled if a dedicated apex-domain directory already exists.
+
+### Conflict handling
+
+If you enable a site whose hostname matches an alias configured on another site, the dashboard warns you and — after confirmation — automatically clears the conflicting alias flag on the other site. The New Site modal also shows an inline warning when the name you are about to create would conflict with an existing alias.
 
 ## Cloudflare API token
 
@@ -148,7 +162,7 @@ The dashboard is backed by a small REST API:
 |---|---|---|
 | `GET` | `/api/sites` | List all discovered sites and their state. |
 | `POST` | `/api/sites` | Create a new site from a template. Body: `{"subdomain":"blog","domain":"example.com","template":"static-html"}` |
-| `PATCH` | `/api/sites/:name` | Update a site's settings (enabled state, contact form config, www redirect). Body: `{"enabled":true,"contact_enabled":true,"contact_to":"you@example.com","www_redirect":false}` |
+| `PATCH` | `/api/sites/:name` | Update a site's settings (enabled state, contact form config, alias serving). Body: `{"enabled":true,"contact_enabled":true,"contact_to":"you@example.com","serve_at_www":false,"serve_at_apex":false}` |
 | `DELETE` | `/api/sites/:name` | Delete a site and permanently remove its folder. If the site is currently enabled it is disabled first. |
 | `GET` | `/api/domains` | List domains available from the configured zone map. |
 | `GET` | `/api/dns-check?site=:name` | Check whether a site's DNS is resolving via Cloudflare's `1.1.1.1` resolver. |
@@ -181,7 +195,7 @@ go test ./...
 | `cloudflare.go` | Cloudflare DNS record and Tunnel ingress reconciliation. |
 | `dashboard.go` | Web dashboard HTTP handlers and REST API. |
 | `contact.go` | Contact form handler — rate limiting, validation, honeypot, and Mailgun delivery. |
-| `siteconfig.go` | Per-site `site.json` read/write — enabled flag, DNS state, contact form settings, and www redirect toggle. |
+| `siteconfig.go` | Per-site `site.json` read/write — enabled flag, DNS state, contact form settings, and alias-serving toggles (`serve_at_www`, `serve_at_apex`). Includes startup migration from the legacy `www_redirect` key. |
 | `sitetemplates.go` | Embedded site template scaffolding (`go:embed`). |
 | `templates/` | Dashboard HTML and Caddyfile Go template. |
 | `site-templates/` | Embedded starter templates copied when a new site is created. |

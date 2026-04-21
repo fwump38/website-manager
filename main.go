@@ -99,6 +99,8 @@ func main() {
 		AdminURL:     cfg.CaddyAdminURL,
 	}
 
+	migrateSiteConfigs(cfg.SitesDir)
+
 	if err := StartWatcher(cfg.SitesDir, state, reconcileCh, logger); err != nil {
 		logger.Fatalf("failed to start watcher: %v", err)
 	}
@@ -222,22 +224,40 @@ func reconcileOnce(state *State, cfg Config, caddy *CaddyManager, cf *Cloudflare
 	reconcileCloudflare(state, cfg, cf, logger)
 }
 
+// apexOf returns the bare apex domain for a hostname (last two dot-separated
+// labels), e.g. "my.site.com" → "site.com", "site.com" → "site.com".
+func apexOf(hostname string) string {
+	parts := strings.Split(hostname, ".")
+	if len(parts) <= 2 {
+		return hostname
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
 func reconcileCaddy(state *State, cfg Config, caddy *CaddyManager, cf *CloudflareClient, logger *log.Logger) {
-	enabledSites := state.EnabledSites()
-	allSites := state.AllSiteNames()
+	allSiteNames := state.AllSiteNames()
+	allSiteSet := make(map[string]bool, len(allSiteNames))
+	for _, s := range allSiteNames {
+		allSiteSet[strings.ToLower(s)] = true
+	}
+
 	var siteEntries []siteEntry
-	var wwwRedirects []string
-	for _, site := range allSites {
+	for _, site := range allSiteNames {
 		siteCfg, _ := loadSiteConfig(cfg.SitesDir, site)
-		siteEntries = append(siteEntries, siteEntry{Name: site, ContactEnabled: siteCfg.ContactEnabled})
-	}
-	for _, site := range enabledSites {
-		siteCfg, _ := loadSiteConfig(cfg.SitesDir, site)
-		if siteCfg.WWWRedirect {
-			wwwRedirects = append(wwwRedirects, site)
+		entry := siteEntry{Name: site, ContactEnabled: siteCfg.ContactEnabled}
+		if siteCfg.Enabled {
+			apex := apexOf(site)
+			wwwHost := "www." + apex
+			if siteCfg.ServeAtWWW && !allSiteSet[strings.ToLower(wwwHost)] {
+				entry.ExtraHosts = append(entry.ExtraHosts, wwwHost)
+			}
+			if siteCfg.ServeAtApex && site != apex && !allSiteSet[strings.ToLower(apex)] {
+				entry.ExtraHosts = append(entry.ExtraHosts, apex)
+			}
 		}
+		siteEntries = append(siteEntries, entry)
 	}
-	if err := caddy.GenerateCaddyfile(siteEntries, wwwRedirects); err != nil {
+	if err := caddy.GenerateCaddyfile(siteEntries); err != nil {
 		logger.Printf("failed to generate caddyfile: %v", err)
 		return
 	}
