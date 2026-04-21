@@ -157,21 +157,6 @@ func (c *CloudflareClient) Reconcile(state *State, sitesDir string, enabledSites
 		}
 	}
 
-	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
-	for _, site := range previouslyManagedSites {
-		if !enabledMap[site] {
-			for _, hostname := range c.getManagedHostnames([]string{site}, allSites, sitesDir) {
-				c.logger.Printf("Deleting DNS for %s", hostname)
-				if err := c.deleteDNS(ctx, hostname); err != nil {
-					return err
-				}
-			}
-			if err := state.SetHasDNS(site, false); err != nil {
-				return fmt.Errorf("failed to save has_dns for %s: %w", site, err)
-			}
-		}
-	}
-
 	c.logger.Printf("Reconciling tunnel ingress")
 	if err := c.reconcileIngress(ctx, sitesDir, enabledSites, allSites, previouslyManagedSites); err != nil {
 		return err
