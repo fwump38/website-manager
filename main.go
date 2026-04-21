@@ -16,7 +16,6 @@ import (
 
 type Config struct {
 	SitesDir        string
-	StateFile       string
 	CaddyAdminURL   string
 	CaddyfilePath   string
 	CaddyServiceURL string
@@ -44,7 +43,6 @@ func parseEnvInt(key string, defaultVal int) int {
 func loadConfig() Config {
 	cfg := Config{
 		SitesDir:        os.Getenv("SITES_DIR"),
-		StateFile:       os.Getenv("STATE_FILE"),
 		CaddyAdminURL:   os.Getenv("CADDY_ADMIN_URL"),
 		CaddyfilePath:   os.Getenv("CADDYFILE_OUTPUT"),
 		CaddyServiceURL: os.Getenv("CADDY_SERVICE_URL"),
@@ -62,9 +60,6 @@ func loadConfig() Config {
 
 	if cfg.SitesDir == "" {
 		cfg.SitesDir = "/sites"
-	}
-	if cfg.StateFile == "" {
-		cfg.StateFile = filepath.Join(cfg.SitesDir, "enabled.json")
 	}
 	if cfg.CaddyAdminURL == "" {
 		cfg.CaddyAdminURL = "http://caddy:2019"
@@ -88,10 +83,7 @@ func main() {
 	cfg := loadConfig()
 	logger := log.New(os.Stdout, "site-manager: ", log.LstdFlags|log.Lmsgprefix)
 
-	state, err := LoadState(cfg.StateFile)
-	if err != nil {
-		logger.Fatalf("failed to load state: %v", err)
-	}
+	state := NewState(cfg.SitesDir)
 	state.FileUID = cfg.FileUID
 	state.FileGID = cfg.FileGID
 
@@ -105,7 +97,7 @@ func main() {
 		AdminURL:     cfg.CaddyAdminURL,
 	}
 
-	if err := StartWatcher(cfg.SitesDir, state, cfg.StateFile, reconcileCh, logger); err != nil {
+	if err := StartWatcher(cfg.SitesDir, state, reconcileCh, logger); err != nil {
 		logger.Fatalf("failed to start watcher: %v", err)
 	}
 
@@ -134,9 +126,9 @@ func main() {
 	mux.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			handleSites(state, cfg.SitesDir, cfClient, w, r)
+			handleSites(state, cfClient, w, r)
 		case http.MethodPost:
-			handleCreateSite(state, cfg.StateFile, cfg.SitesDir, cfClient, reconcileCh, cfg.FileUID, cfg.FileGID, logger, w, r)
+			handleCreateSite(state, cfg.SitesDir, cfClient, reconcileCh, cfg.FileUID, cfg.FileGID, logger, w, r)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -144,9 +136,9 @@ func main() {
 	mux.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPatch:
-			handleSitePatch(state, cfg.StateFile, cfg.SitesDir, cfg.FileUID, cfg.FileGID, reconcileCh, cfReconcileCh, w, r)
+			handleSitePatch(state, cfg.SitesDir, cfg.FileUID, cfg.FileGID, reconcileCh, cfReconcileCh, w, r)
 		case http.MethodDelete:
-			handleDeleteSite(state, cfg.StateFile, cfg.SitesDir, reconcileCh, cfReconcileCh, logger, w, r)
+			handleDeleteSite(state, cfg.SitesDir, reconcileCh, cfReconcileCh, logger, w, r)
 		case http.MethodPost:
 			if strings.HasSuffix(r.URL.Path, "/optimize-images") {
 				handleOptimizeImages(state, cfg.SitesDir, cfg.FileUID, cfg.FileGID, logger, w, r)
@@ -251,7 +243,7 @@ func reconcileCloudflare(state *State, cfg Config, cf *CloudflareClient, logger 
 		return
 	}
 	enabledSites := state.EnabledSites()
-	if err := cf.Reconcile(state, cfg.StateFile, cfg.SitesDir, enabledSites); err != nil {
+	if err := cf.Reconcile(state, cfg.SitesDir, enabledSites); err != nil {
 		logger.Printf("failed to reconcile cloudflare: %v", err)
 	}
 }

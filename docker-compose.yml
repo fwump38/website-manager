@@ -23,7 +23,6 @@ services:
       - /mnt/user/appdata/caddy/config:/etc/caddy
     environment:
       - SITES_DIR=/sites
-      - STATE_FILE=/sites/enabled.json
       - CADDYFILE_OUTPUT=/etc/caddy/Caddyfile
       - CADDY_ADMIN_URL=http://caddy:2019
       - DASHBOARD_PORT=8080

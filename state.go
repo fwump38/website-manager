@@ -1,24 +1,22 @@
 package main
 
 import (
-	"encoding/json"
-	"os"
 	"sort"
 	"sync"
 )
 
-type SiteInfo struct {
-	Enabled bool `json:"enabled"`
-	HasDNS  bool `json:"has_dns,omitempty"`
-}
-
+// State is a thread-safe in-memory registry of site names discovered from the
+// sites directory. All persistent data (enabled flag, DNS state, contact
+// settings, etc.) lives in each site's own site.json via siteconfig.go.
 type State struct {
-	mu      sync.RWMutex
-	Sites   map[string]SiteInfo `json:"sites"`
-	FileUID int                 `json:"-"`
-	FileGID int                 `json:"-"`
+	mu       sync.RWMutex
+	sites    map[string]struct{}
+	sitesDir string
+	FileUID  int
+	FileGID  int
 }
 
+// SiteView is the API representation of a site returned by /api/sites.
 type SiteView struct {
 	Name           string `json:"name"`
 	Enabled        bool   `json:"enabled"`
@@ -30,139 +28,100 @@ type SiteView struct {
 	WWWRedirect    bool   `json:"www_redirect"`
 }
 
-func LoadState(path string) (*State, error) {
-	st := &State{Sites: map[string]SiteInfo{}}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err := SaveState(path, st); err != nil {
-				return nil, err
-			}
-			return st, nil
-		}
-		return nil, err
+// NewState returns an empty State rooted at sitesDir.
+func NewState(sitesDir string) *State {
+	return &State{
+		sites:    map[string]struct{}{},
+		sitesDir: sitesDir,
 	}
-
-	if len(data) == 0 {
-		st.Sites = map[string]SiteInfo{}
-		return st, nil
-	}
-
-	if err := json.Unmarshal(data, st); err != nil {
-		return nil, err
-	}
-	if st.Sites == nil {
-		st.Sites = map[string]SiteInfo{}
-	}
-	return st, nil
-}
-
-func SaveState(path string, s *State) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	payload, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	tempFile := path + ".tmp"
-	if err := os.WriteFile(tempFile, payload, 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(tempFile, path); err != nil {
-		return err
-	}
-	// Best-effort chown using configured PUID/PGID (Unraid compatibility).
-	if s.FileUID != 0 || s.FileGID != 0 {
-		_ = os.Chown(path, s.FileUID, s.FileGID)
-	}
-	return nil
 }
 
 func (s *State) AddSite(site string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.Sites[site]; ok {
-		return
-	}
-	s.Sites[site] = SiteInfo{
-		Enabled: false,
-	}
+	s.sites[site] = struct{}{}
 }
 
 func (s *State) RemoveSite(site string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.Sites, site)
+	delete(s.sites, site)
 }
 
-func (s *State) SetEnabled(site string, enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info := s.Sites[site]
-	info.Enabled = enabled
-	s.Sites[site] = info
+// SetEnabled persists the enabled flag for site by doing a read-modify-write
+// on its site.json. Other fields already stored in site.json are preserved.
+func (s *State) SetEnabled(site string, enabled bool) error {
+	cfg, err := loadSiteConfig(s.sitesDir, site)
+	if err != nil {
+		return err
+	}
+	cfg.Enabled = enabled
+	return saveSiteConfig(s.sitesDir, site, cfg, s.FileUID, s.FileGID)
 }
 
-func (s *State) SetHasDNS(site string, v bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info := s.Sites[site]
-	info.HasDNS = v
-	s.Sites[site] = info
+// SetHasDNS persists the has_dns flag for site by doing a read-modify-write
+// on its site.json.
+func (s *State) SetHasDNS(site string, v bool) error {
+	cfg, err := loadSiteConfig(s.sitesDir, site)
+	if err != nil {
+		return err
+	}
+	cfg.HasDNS = v
+	return saveSiteConfig(s.sitesDir, site, cfg, s.FileUID, s.FileGID)
 }
 
+// DNSManagedSites returns the sorted list of sites whose site.json reports
+// has_dns = true.
 func (s *State) DNSManagedSites() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var sites []string
-	for name, info := range s.Sites {
-		if info.HasDNS {
-			sites = append(sites, name)
+	names := s.AllSiteNames()
+	var out []string
+	for _, name := range names {
+		cfg, _ := loadSiteConfig(s.sitesDir, name)
+		if cfg.HasDNS {
+			out = append(out, name)
 		}
 	}
-	sort.Strings(sites)
-	return sites
+	return out // already sorted by AllSiteNames
 }
 
+// EnabledSites returns the sorted list of sites whose site.json reports
+// enabled = true.
 func (s *State) EnabledSites() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var sites []string
-	for name, info := range s.Sites {
-		if info.Enabled {
-			sites = append(sites, name)
+	names := s.AllSiteNames()
+	var out []string
+	for _, name := range names {
+		cfg, _ := loadSiteConfig(s.sitesDir, name)
+		if cfg.Enabled {
+			out = append(out, name)
 		}
 	}
-	sort.Strings(sites)
-	return sites
+	return out // already sorted by AllSiteNames
 }
 
 func (s *State) AllSiteNames() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var sites []string
-	for name := range s.Sites {
-		sites = append(sites, name)
+	names := make([]string, 0, len(s.sites))
+	for name := range s.sites {
+		names = append(names, name)
 	}
-	sort.Strings(sites)
-	return sites
+	sort.Strings(names)
+	return names
 }
 
 func (s *State) AllSites() []SiteView {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var output []SiteView
-	for name, info := range s.Sites {
-		output = append(output, SiteView{Name: name, Enabled: info.Enabled, HasDNS: info.HasDNS})
+	names := s.AllSiteNames()
+	out := make([]SiteView, 0, len(names))
+	for _, name := range names {
+		cfg, _ := loadSiteConfig(s.sitesDir, name)
+		out = append(out, SiteView{
+			Name:           name,
+			Enabled:        cfg.Enabled,
+			HasDNS:         cfg.HasDNS,
+			ContactEnabled: cfg.ContactEnabled,
+			ContactTo:      cfg.ContactTo,
+			WWWRedirect:    cfg.WWWRedirect,
+		})
 	}
-	sort.Slice(output, func(i, j int) bool {
-		return output[i].Name < output[j].Name
-	})
-	return output
-}
-
-func (s *State) Save(path string) error {
-	return SaveState(path, s)
+	return out
 }

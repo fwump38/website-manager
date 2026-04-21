@@ -8,8 +8,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func StartWatcher(dir string, state *State, stateFile string, reconcileCh chan<- struct{}, logger *log.Logger) error {
-	if err := syncDirectoryState(dir, state, stateFile); err != nil {
+func StartWatcher(dir string, state *State, reconcileCh chan<- struct{}, logger *log.Logger) error {
+	if err := syncDirectoryState(dir, state); err != nil {
 		return err
 	}
 	sendReconcile(reconcileCh)
@@ -41,7 +41,7 @@ func StartWatcher(dir string, state *State, stateFile string, reconcileCh chan<-
 					timer.Stop()
 				}
 				timer = time.AfterFunc(100*time.Millisecond, func() {
-					if err := syncDirectoryState(dir, state, stateFile); err != nil {
+					if err := syncDirectoryState(dir, state); err != nil {
 						logger.Printf("failed to sync directory state: %v", err)
 						return
 					}
@@ -78,7 +78,7 @@ func shouldHandleEvent(event fsnotify.Event) bool {
 	return true
 }
 
-func syncDirectoryState(dir string, state *State, stateFile string) error {
+func syncDirectoryState(dir string, state *State) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -99,7 +99,7 @@ func syncDirectoryState(dir string, state *State, stateFile string) error {
 			state.RemoveSite(site)
 		}
 	}
-	return state.Save(stateFile)
+	return nil
 }
 
 func sendReconcile(ch chan<- struct{}) {

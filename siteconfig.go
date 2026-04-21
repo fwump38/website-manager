@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 )
 
-// SiteConfig holds per-site configuration that is managed via the dashboard
-// and persisted as {sitesDir}/{siteName}/site.json.
+// SiteConfig holds all per-site configuration persisted as {sitesDir}/{siteName}/site.json.
+// This is the single source of truth for both operational state (enabled, has_dns)
+// and user-managed settings (contact form, www redirect).
 type SiteConfig struct {
+	Enabled        bool   `json:"enabled"`
+	HasDNS         bool   `json:"has_dns,omitempty"`
 	ContactEnabled bool   `json:"contact_enabled"`
 	ContactTo      string `json:"contact_to,omitempty"`
 	WWWRedirect    bool   `json:"www_redirect"`

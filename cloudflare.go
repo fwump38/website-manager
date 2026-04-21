@@ -129,7 +129,7 @@ func (c *CloudflareClient) zoneIDForHostname(ctx context.Context, hostname strin
 	return zoneMap[bestMatch], true
 }
 
-func (c *CloudflareClient) Reconcile(state *State, stateFile string, sitesDir string, enabledSites []string) error {
+func (c *CloudflareClient) Reconcile(state *State, sitesDir string, enabledSites []string) error {
 	ctx := context.Background()
 	c.logger.Printf("Starting Cloudflare reconciliation for enabled sites: %v", enabledSites)
 	enabledMap := map[string]bool{}
@@ -144,7 +144,7 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, sitesDir st
 	previouslyManagedSites := state.DNSManagedSites()
 
 	// Ensure DNS for each enabled site and its derived hostnames (e.g. www variant).
-	// HasDNS is tracked on the base site name only so it survives directory sync.
+	// HasDNS is tracked in each site's site.json.
 	for _, site := range enabledSites {
 		for _, hostname := range c.getManagedHostnames([]string{site}, allSites, sitesDir) {
 			c.logger.Printf("Ensuring DNS for %s", hostname)
@@ -152,10 +152,9 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, sitesDir st
 				return err
 			}
 		}
-		state.SetHasDNS(site, true)
-	}
-	if err := state.Save(stateFile); err != nil {
-		return fmt.Errorf("failed to save state after DNS ensure: %w", err)
+		if err := state.SetHasDNS(site, true); err != nil {
+			return fmt.Errorf("failed to save has_dns for %s: %w", site, err)
+		}
 	}
 
 	// Delete DNS only for sites that were previously managed (HasDNS=true) and are now disabled.
@@ -167,11 +166,10 @@ func (c *CloudflareClient) Reconcile(state *State, stateFile string, sitesDir st
 					return err
 				}
 			}
-			state.SetHasDNS(site, false)
+			if err := state.SetHasDNS(site, false); err != nil {
+				return fmt.Errorf("failed to save has_dns for %s: %w", site, err)
+			}
 		}
-	}
-	if err := state.Save(stateFile); err != nil {
-		return fmt.Errorf("failed to save state after DNS delete: %w", err)
 	}
 
 	c.logger.Printf("Reconciling tunnel ingress")

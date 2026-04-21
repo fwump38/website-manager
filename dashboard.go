@@ -26,7 +26,7 @@ type patchRequest struct {
 	WWWRedirect    bool   `json:"www_redirect"`
 }
 
-func handleSites(state *State, sitesDir string, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
+func handleSites(state *State, cfClient *CloudflareClient, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -37,12 +37,8 @@ func handleSites(state *State, sitesDir string, cfClient *CloudflareClient, w ht
 	}
 	sites := state.AllSites()
 	for i := range sites {
-		siteCfg, _ := loadSiteConfig(sitesDir, sites[i].Name)
-		sites[i].ContactEnabled = siteCfg.ContactEnabled
-		sites[i].ContactTo = siteCfg.ContactTo
-		sites[i].WWWRedirect = siteCfg.WWWRedirect
 		sites[i].IsApex = apexDomains[sites[i].Name]
-		if sites[i].Enabled && sites[i].HasDNS && sites[i].IsApex && siteCfg.WWWRedirect {
+		if sites[i].Enabled && sites[i].HasDNS && sites[i].IsApex && sites[i].WWWRedirect {
 			sites[i].HasWWW = true
 		}
 	}
@@ -93,7 +89,7 @@ func dnsIsLive(hostname string) bool {
 	return err == nil && len(addrs) > 0
 }
 
-func handleSitePatch(state *State, stateFile, sitesDir string, fileUID, fileGID int, reconcileCh chan<- struct{}, cfReconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
+func handleSitePatch(state *State, sitesDir string, fileUID, fileGID int, reconcileCh chan<- struct{}, cfReconcileCh chan<- struct{}, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -132,14 +128,8 @@ func handleSitePatch(state *State, stateFile, sitesDir string, fileUID, fileGID 
 		}
 	}
 
-	state.SetEnabled(decodedName, payload.Enabled)
-	if err := state.Save(stateFile); err != nil {
-		log.Printf("failed to save state: %v", err)
-		http.Error(w, "failed to save state", http.StatusInternalServerError)
-		return
-	}
-
 	siteCfg := SiteConfig{
+		Enabled:        payload.Enabled,
 		ContactEnabled: payload.ContactEnabled,
 		ContactTo:      payload.ContactTo,
 		WWWRedirect:    payload.WWWRedirect,
@@ -184,7 +174,7 @@ func handleDomains(cfClient *CloudflareClient, w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(domains)
 }
 
-func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfReconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+func handleDeleteSite(state *State, sitesDir string, reconcileCh, cfReconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -223,15 +213,9 @@ func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfR
 		return
 	}
 
-	// If the site is enabled, disable it and reconcile so Caddy + Cloudflare
-	// clean up before the directory is removed.
-	state.SetEnabled(decodedName, false)
+	// Remove the site from the in-memory registry. The directory (including
+	// site.json) is deleted below, so no persistent state needs updating.
 	state.RemoveSite(decodedName)
-	if err := state.Save(stateFile); err != nil {
-		logger.Printf("failed to save state after removing site %q: %v", decodedName, err)
-		http.Error(w, "failed to save state", http.StatusInternalServerError)
-		return
-	}
 
 	if err := os.RemoveAll(sitePath); err != nil {
 		logger.Printf("failed to delete site directory %q: %v", sitePath, err)
@@ -244,7 +228,7 @@ func handleDeleteSite(state *State, stateFile, sitesDir string, reconcileCh, cfR
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, fileUID, fileGID int, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+func handleCreateSite(state *State, sitesDir string, cfClient *CloudflareClient, reconcileCh chan<- struct{}, fileUID, fileGID int, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -329,11 +313,6 @@ func handleCreateSite(state *State, stateFile, sitesDir string, cfClient *Cloudf
 	// Register the site in state immediately (watcher will no-op on the
 	// existing directory when it fires shortly after).
 	state.AddSite(siteName)
-	if err := state.Save(stateFile); err != nil {
-		logger.Printf("failed to save state after creating site %q: %v", siteName, err)
-		jsonError(w, "site created but failed to save state", http.StatusInternalServerError)
-		return
-	}
 	sendReconcile(reconcileCh)
 
 	view := SiteView{

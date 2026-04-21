@@ -9,7 +9,7 @@ It watches a mounted sites directory, manages site enable/disable state, regener
 Each subdirectory under the configured sites path is treated as a site whose name is the hostname to serve (e.g. `blog.example.com`). The service:
 
 1. **Discovers** site directories at startup and via filesystem watch.
-2. **Tracks state** in `enabled.json` — which sites are enabled and whether their DNS has been provisioned.
+2. **Tracks state** in each site's `site.json` — whether it is enabled, whether DNS has been provisioned, and any per-site settings.
 3. **Generates** a Caddyfile for all enabled sites and reloads Caddy via its admin API.
 4. **Reconciles** Cloudflare DNS (CNAME records pointing at the Cloudflare Tunnel) and Tunnel ingress rules for enabled sites, cleaning up rules for sites that are disabled.
 5. **Exposes a dashboard** on port `8080` to view, create, enable, and disable sites.
@@ -44,7 +44,6 @@ All configuration is provided via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `SITES_DIR` | `/sites` | Path to the directory containing site folders. |
-| `STATE_FILE` | `$SITES_DIR/enabled.json` | Path to the JSON state file. |
 | `CADDYFILE_OUTPUT` | `/etc/caddy/Caddyfile` | Path where the generated Caddyfile is written. |
 | `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy admin API URL used for config reload. |
 | `CADDY_SERVICE_URL` | `http://caddy:80` | Caddy service URL used as the Cloudflare Tunnel backend. |
@@ -53,8 +52,8 @@ All configuration is provided via environment variables.
 | `CF_ACCOUNT_ID` | — | Cloudflare account ID. |
 | `CF_TUNNEL_ID` | — | UUID of the Cloudflare Tunnel to manage. |
 | `CF_TUNNEL_HOSTNAME` | `<tunnel_id>.cfargotunnel.com` | Tunnel hostname used as the CNAME target. Auto-derived from `CF_TUNNEL_ID` if not set. |
-| `PUID` | `99` | User ID applied to created site files and `enabled.json`. Defaults to the Unraid `nobody` UID. |
-| `PGID` | `100` | Group ID applied to created site files and `enabled.json`. Defaults to the Unraid `users` GID. |
+| `PUID` | `99` | User ID applied to created site files and `site.json`. Defaults to the Unraid `nobody` UID. |
+| `PGID` | `100` | Group ID applied to created site files and `site.json`. Defaults to the Unraid `users` GID. |
 | `MAILGUN_API_KEY` | — | Mailgun private API key. Required to enable contact form submission on any site. |
 | `MAILGUN_DOMAIN` | — | The Mailgun sending domain (e.g. `mg.example.com`). Must match a verified domain in your Mailgun account. |
 
@@ -176,13 +175,13 @@ go test ./...
 | File / Directory | Description |
 |---|---|
 | `main.go` | Application bootstrap, config loading, and reconcile loop. |
-| `state.go` | Thread-safe `enabled.json` state management. |
+| `state.go` | Thread-safe in-memory site registry (all persistent state lives in per-site `site.json`). |
 | `watcher.go` | Site folder discovery and filesystem watcher (fsnotify). |
 | `caddy.go` | Caddyfile template rendering and Caddy admin API reload. |
 | `cloudflare.go` | Cloudflare DNS record and Tunnel ingress reconciliation. |
 | `dashboard.go` | Web dashboard HTTP handlers and REST API. |
 | `contact.go` | Contact form handler — rate limiting, validation, honeypot, and Mailgun delivery. |
-| `siteconfig.go` | Per-site `site.json` config (contact form settings and www redirect toggle). |
+| `siteconfig.go` | Per-site `site.json` read/write — enabled flag, DNS state, contact form settings, and www redirect toggle. |
 | `sitetemplates.go` | Embedded site template scaffolding (`go:embed`). |
 | `templates/` | Dashboard HTML and Caddyfile Go template. |
 | `site-templates/` | Embedded starter templates copied when a new site is created. |
