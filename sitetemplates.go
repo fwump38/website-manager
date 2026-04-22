@@ -100,4 +100,26 @@ func copyEmbeddedFile(src, dest string) error {
 	return err
 }
 
+// createEmptySiteDir creates the standard site directory structure without
+// copying a template. Used for sites created via framer-download.
+func createEmptySiteDir(sitesDir, siteName string, uid, gid int) error {
+	siteRoot := filepath.Join(sitesDir, siteName)
+	dirs := []string{
+		siteRoot,
+		filepath.Join(siteRoot, "assets", "css"),
+		filepath.Join(siteRoot, "assets", "js"),
+		filepath.Join(siteRoot, "assets", "images"),
+	}
+	hasOwnership := uid != 0 || gid != 0
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		if hasOwnership {
+			_ = os.Chown(dir, uid, gid)
+		}
+	}
+	return nil
+}
+
 // resolveNobodyIDs is intentionally removed; use PUID/PGID env vars instead.

@@ -186,6 +186,7 @@ type createSiteRequest struct {
 	Subdomain string `json:"subdomain"`
 	Domain    string `json:"domain"`
 	Template  string `json:"template"`
+	FramerURL string `json:"framer_url"`
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
@@ -304,6 +305,71 @@ func handleCreateSite(state *State, sitesDir string, cfClient *CloudflareClient,
 		jsonError(w, "template is required", http.StatusBadRequest)
 		return
 	}
+
+	// "framer-download" is a special template that does not copy from embedded FS.
+	if payload.Template == "framer-download" {
+		if payload.FramerURL == "" {
+			jsonError(w, "framer_url is required for framer-download template", http.StatusBadRequest)
+			return
+		}
+		parsedURL, urlErr := url.Parse(payload.FramerURL)
+		if urlErr != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+			jsonError(w, "framer_url must be a valid http or https URL", http.StatusBadRequest)
+			return
+		}
+
+		// Normalise and validate subdomain.
+		subdomain := strings.ToLower(strings.TrimSpace(payload.Subdomain))
+		if subdomain != "" && !subdomainRe.MatchString(subdomain) {
+			jsonError(w, "invalid subdomain: use lowercase letters, numbers, and hyphens only (no leading/trailing hyphens)", http.StatusBadRequest)
+			return
+		}
+
+		siteName := payload.Domain
+		if subdomain != "" {
+			siteName = subdomain + "." + payload.Domain
+		}
+
+		for _, existing := range state.AllSiteNames() {
+			if existing == siteName {
+				jsonError(w, "site already exists", http.StatusBadRequest)
+				return
+			}
+		}
+
+		if err := createEmptySiteDir(sitesDir, siteName, fileUID, fileGID); err != nil {
+			logger.Printf("failed to create empty site dir for %q: %v", siteName, err)
+			jsonError(w, "failed to create site folder", http.StatusInternalServerError)
+			return
+		}
+
+		state.AddSite(siteName)
+		state.SetDownloadStatus(siteName, DownloadStatus{Running: true})
+
+		d := &FramerDownloader{
+			SiteDir:  filepath.Join(sitesDir, siteName),
+			BaseURL:  parsedURL,
+			SiteName: siteName,
+			State:    state,
+			FileUID:  fileUID,
+			FileGID:  fileGID,
+			Logger:   logger,
+		}
+		go d.Download()
+
+		sendReconcile(reconcileCh)
+
+		view := SiteView{
+			Name:        siteName,
+			Enabled:     false,
+			Downloading: true,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(view)
+		return
+	}
+
 	templateValid := false
 	for _, t := range availableTemplates {
 		if t == payload.Template {

@@ -22,6 +22,9 @@ h1 { margin: 0; font-size: 2rem; }
 .badge.www { background: #6366f1; color: #e0e7ff; }
 .badge.live { background: #0ea5e9; color: #e0f2fe; }
 .badge.checking { background: #374151; color: #9ca3af; }
+.badge.downloading { background: #d97706; color: #fef3c7; animation: pulse 1.5s ease-in-out infinite; }
+.badge.dl-error { background: #dc2626; color: #fee2e2; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }
 .header-actions { display: flex; gap: 8px; }
 
 /* Pill toggle */
@@ -289,7 +292,13 @@ dialog.optimize-dialog { max-width: 640px; }
     <label for="templateSelect">Template</label>
     <select id="templateSelect">
       <option value="static-html">Static HTML</option>
+      <option value="framer-download">Download from Framer</option>
     </select>
+  </div>
+  <div class="form-field" id="framerURLField" style="display:none">
+    <label for="framerURLInput">Framer site URL</label>
+    <input type="url" id="framerURLInput" placeholder="https://mysite.framer.website" autocomplete="off" spellcheck="false" />
+    <span style="font-size:0.8rem;color:#6b7280">All pages and Framer assets will be downloaded and self-hosted.</span>
   </div>
   <p class="form-error" id="modalError" role="alert"></p>
   <div class="modal-actions">
@@ -317,6 +326,8 @@ const domainSelect = document.getElementById('domainSelect');
 const subdomainInput = document.getElementById('subdomainInput');
 const sitePreview = document.getElementById('sitePreview');
 const templateSelect = document.getElementById('templateSelect');
+const framerURLField = document.getElementById('framerURLField');
+const framerURLInput = document.getElementById('framerURLInput');
 const modalError = document.getElementById('modalError');
 const cancelCreate = document.getElementById('cancelCreate');
 const submitCreate = document.getElementById('submitCreate');
@@ -437,6 +448,9 @@ function renderSites() {
           const liveBadge = site.enabled
             ? `<span class="badge checking" id="${liveBadgeId}">Checking DNS…</span>`
             : '';
+          const dlBadge = site.downloading
+            ? '<span class="badge downloading">Downloading…</span>'
+            : (site.download_error ? `<span class="badge dl-error" title="${escapeHtml(site.download_error)}">Download failed</span>` : '');
           return `
           <div class="card" id="site-${site.name}">
             <h2><a href="${site.enabled ? `https://${site.name}` : `/preview/${encodeURIComponent(site.name)}/`}" target="_blank" rel="noopener noreferrer">${site.name}</a></h2>
@@ -445,6 +459,7 @@ function renderSites() {
               ${wwwBadge}
               ${apexBadge}
               ${liveBadge}
+              ${dlBadge}
             </div>
             <div class="card-actions">
               <label class="pill-toggle" title="${site.enabled ? 'Disable site' : 'Enable site'}">
@@ -785,11 +800,20 @@ async function initDomains() {
 }
 
 // ── New Site Modal ─────────────────────────────────────────────────────────
+templateSelect.addEventListener('change', () => {
+  framerURLField.style.display = templateSelect.value === 'framer-download' ? '' : 'none';
+  if (templateSelect.value !== 'framer-download') framerURLInput.value = '';
+  modalError.textContent = '';
+});
+
 newSiteButton.addEventListener('click', () => {
   subdomainInput.value = '';
   sitePreview.textContent = '';
   modalError.textContent = '';
   submitCreate.disabled = false;
+  templateSelect.value = 'static-html';
+  framerURLField.style.display = 'none';
+  framerURLInput.value = '';
   updateNewSitePreview();
   dialog.showModal();
 });
@@ -843,16 +867,35 @@ submitCreate.addEventListener('click', async () => {
     return;
   }
 
+  let framerURL = '';
+  if (template === 'framer-download') {
+    framerURL = framerURLInput.value.trim();
+    if (!framerURL) {
+      modalError.textContent = 'Framer site URL is required.';
+      return;
+    }
+    try {
+      const u = new URL(framerURL);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error();
+    } catch {
+      modalError.textContent = 'Please enter a valid https URL for the Framer site.';
+      return;
+    }
+  }
+
   submitCreate.disabled = true;
   try {
+    const body = { subdomain, domain, template };
+    if (framerURL) body.framer_url = framerURL;
     const res = await fetch('/api/sites', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subdomain, domain, template })
+      body: JSON.stringify(body)
     });
     if (res.status === 201) {
       dialog.close();
       await fetchSites();
+      if (template === 'framer-download') startDownloadPoller();
     } else {
       const data = await res.json().catch(() => ({}));
       modalError.textContent = data.error || 'Failed to create site.';
@@ -976,6 +1019,20 @@ function showOptimizeResults(siteName, result) {
   }
   optimizeDialog.showModal();
   showToast(`Optimized ${result.optimized} image${result.optimized === 1 ? '' : 's'} for ${siteName}.`);
+}
+
+// ── Download poller ────────────────────────────────────────────────────────
+let _downloadPoller = null;
+
+function startDownloadPoller() {
+  if (_downloadPoller) return;
+  _downloadPoller = setInterval(async () => {
+    await fetchSites();
+    if (!allSites.some(s => s.downloading)) {
+      clearInterval(_downloadPoller);
+      _downloadPoller = null;
+    }
+  }, 3000);
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────

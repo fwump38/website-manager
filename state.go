@@ -5,15 +5,23 @@ import (
 	"sync"
 )
 
+// DownloadStatus tracks the progress of an async Framer site download.
+type DownloadStatus struct {
+	Running bool   `json:"running"`
+	Error   string `json:"error,omitempty"`
+}
+
 // State is a thread-safe in-memory registry of site names discovered from the
 // sites directory. All persistent data (enabled flag, DNS state, contact
 // settings, etc.) lives in each site's own site.json via siteconfig.go.
 type State struct {
-	mu       sync.RWMutex
-	sites    map[string]struct{}
-	sitesDir string
-	FileUID  int
-	FileGID  int
+	mu               sync.RWMutex
+	sites            map[string]struct{}
+	sitesDir         string
+	FileUID          int
+	FileGID          int
+	dsMu             sync.RWMutex
+	downloadStatuses map[string]DownloadStatus
 }
 
 // SiteView is the API representation of a site returned by /api/sites.
@@ -28,14 +36,31 @@ type SiteView struct {
 	ContactTo      string `json:"contact_to,omitempty"`
 	ServeAtWWW     bool   `json:"serve_at_www"`
 	ServeAtApex    bool   `json:"serve_at_apex"`
+	Downloading    bool   `json:"downloading,omitempty"`
+	DownloadError  string `json:"download_error,omitempty"`
 }
 
 // NewState returns an empty State rooted at sitesDir.
 func NewState(sitesDir string) *State {
 	return &State{
-		sites:    map[string]struct{}{},
-		sitesDir: sitesDir,
+		sites:            map[string]struct{}{},
+		sitesDir:         sitesDir,
+		downloadStatuses: map[string]DownloadStatus{},
 	}
+}
+
+// SetDownloadStatus stores the download status for a site.
+func (s *State) SetDownloadStatus(site string, ds DownloadStatus) {
+	s.dsMu.Lock()
+	defer s.dsMu.Unlock()
+	s.downloadStatuses[site] = ds
+}
+
+// GetDownloadStatus returns the download status for a site.
+func (s *State) GetDownloadStatus(site string) DownloadStatus {
+	s.dsMu.RLock()
+	defer s.dsMu.RUnlock()
+	return s.downloadStatuses[site]
 }
 
 func (s *State) AddSite(site string) {
@@ -116,6 +141,7 @@ func (s *State) AllSites() []SiteView {
 	out := make([]SiteView, 0, len(names))
 	for _, name := range names {
 		cfg, _ := loadSiteConfig(s.sitesDir, name)
+		ds := s.GetDownloadStatus(name)
 		out = append(out, SiteView{
 			Name:           name,
 			Enabled:        cfg.Enabled,
@@ -124,6 +150,8 @@ func (s *State) AllSites() []SiteView {
 			ContactTo:      cfg.ContactTo,
 			ServeAtWWW:     cfg.ServeAtWWW,
 			ServeAtApex:    cfg.ServeAtApex,
+			Downloading:    ds.Running,
+			DownloadError:  ds.Error,
 		})
 	}
 	return out
