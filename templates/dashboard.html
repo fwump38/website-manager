@@ -249,6 +249,11 @@ dialog.optimize-dialog { max-width: 640px; }
     <button class="btn-secondary" id="editOptimizeBtn" type="button" style="width:100%">Optimize Images</button>
   </div>
 
+  <!-- Re-download from Framer (only shown for Framer-downloaded sites) -->
+  <div id="redownloadSection" style="margin-top: 10px; display:none">
+    <button class="btn-secondary" id="editRedownloadBtn" type="button" style="width:100%">Re-download</button>
+  </div>
+
   <!-- Danger Zone -->
   <div class="danger-zone">
     <h3>Danger Zone</h3>
@@ -570,6 +575,8 @@ const editContactTo = document.getElementById('editContactTo');
 const editDeleteBtn = document.getElementById('editDeleteBtn');
 const editDeleteWarning = document.getElementById('editDeleteWarning');
 const editOptimizeBtn = document.getElementById('editOptimizeBtn');
+const redownloadSection = document.getElementById('redownloadSection');
+const editRedownloadBtn = document.getElementById('editRedownloadBtn');
 const editError = document.getElementById('editError');
 const editCancel = document.getElementById('editCancel');
 const editSave = document.getElementById('editSave');
@@ -620,6 +627,9 @@ function openEditModal(siteName) {
 
   // Show live-site delete warning
   editDeleteWarning.style.display = site.enabled ? '' : 'none';
+
+  // Show re-download button only for Framer-downloaded sites
+  redownloadSection.style.display = site.framer_url ? '' : 'none';
 
   editDialog.showModal();
 }
@@ -723,6 +733,33 @@ editOptimizeBtn.addEventListener('click', async () => {
   } finally {
     editOptimizeBtn.disabled = false;
     spinner.remove();
+  }
+});
+
+// Re-download from within edit modal
+editRedownloadBtn.addEventListener('click', async () => {
+  if (!editingSite) return;
+  const site = allSites.find(s => s.name === editingSite);
+  const framerURL = site && site.framer_url ? site.framer_url : '';
+  if (!confirm(`Re-download ${editingSite} from Framer?\n\nSource: ${framerURL}\n\nExisting files will be overwritten. Continue?`)) return;
+  editRedownloadBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/sites/${encodeURIComponent(editingSite)}/redownload`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      editError.textContent = data.error || 'Re-download failed.';
+      return;
+    }
+    const name = editingSite;
+    editDialog.close();
+    editingSite = null;
+    await fetchSites();
+    startDownloadPoller();
+    showToast(`Re-downloading ${name}…`);
+  } catch (err) {
+    editError.textContent = err.message;
+  } finally {
+    editRedownloadBtn.disabled = false;
   }
 });
 

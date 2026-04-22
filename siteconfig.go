@@ -20,6 +20,9 @@ type SiteConfig struct {
 	ServeAtWWW bool `json:"serve_at_www"`
 	// ServeAtApex makes a non-apex site also serve at its bare apex domain.
 	ServeAtApex bool `json:"serve_at_apex"`
+	// FramerURL is the original Framer site URL used to download this site.
+	// Non-empty only for sites created with the framer-download template.
+	FramerURL string `json:"framer_url,omitempty"`
 }
 
 // migrateSiteConfigs rewrites any site.json that still uses the legacy

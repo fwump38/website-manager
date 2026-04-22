@@ -343,6 +343,11 @@ func handleCreateSite(state *State, sitesDir string, cfClient *CloudflareClient,
 			return
 		}
 
+		// Persist the Framer source URL in site.json so it can be used for re-downloads.
+		if err := saveSiteConfig(sitesDir, siteName, SiteConfig{FramerURL: parsedURL.String()}, fileUID, fileGID); err != nil {
+			logger.Printf("failed to save initial site config for %q: %v", siteName, err)
+		}
+
 		state.AddSite(siteName)
 		state.SetDownloadStatus(siteName, DownloadStatus{Running: true})
 
@@ -718,4 +723,75 @@ func handleOptimizeImages(state *State, sitesDir string, fileUID, fileGID int, l
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+func handleRedownloadSite(state *State, sitesDir string, fileUID, fileGID int, reconcileCh chan<- struct{}, logger *log.Logger, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+	name := strings.TrimSuffix(trimmed, "/redownload")
+	if name == "" || name == trimmed {
+		http.Error(w, "site name required", http.StatusBadRequest)
+		return
+	}
+	decodedName, err := url.PathUnescape(name)
+	if err != nil {
+		http.Error(w, "invalid site name", http.StatusBadRequest)
+		return
+	}
+
+	// Validate site exists in state.
+	found := false
+	for _, sv := range state.AllSites() {
+		if sv.Name == decodedName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		jsonError(w, "site not found", http.StatusNotFound)
+		return
+	}
+
+	// Load site config to get saved framer_url.
+	cfg, err := loadSiteConfig(sitesDir, decodedName)
+	if err != nil {
+		jsonError(w, "failed to load site config", http.StatusInternalServerError)
+		return
+	}
+	if cfg.FramerURL == "" {
+		jsonError(w, "site does not have a saved Framer URL", http.StatusBadRequest)
+		return
+	}
+
+	// Reject if a download is already running.
+	if ds := state.GetDownloadStatus(decodedName); ds.Running {
+		jsonError(w, "download already in progress", http.StatusConflict)
+		return
+	}
+
+	parsedURL, urlErr := url.Parse(cfg.FramerURL)
+	if urlErr != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		jsonError(w, "saved Framer URL is invalid", http.StatusInternalServerError)
+		return
+	}
+
+	state.SetDownloadStatus(decodedName, DownloadStatus{Running: true})
+
+	d := &FramerDownloader{
+		SiteDir:  filepath.Join(sitesDir, decodedName),
+		BaseURL:  parsedURL,
+		SiteName: decodedName,
+		State:    state,
+		FileUID:  fileUID,
+		FileGID:  fileGID,
+		Logger:   logger,
+	}
+	go d.Download()
+
+	sendReconcile(reconcileCh)
+	w.WriteHeader(http.StatusAccepted)
 }

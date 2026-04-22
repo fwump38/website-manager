@@ -146,6 +146,8 @@ func main() {
 		case http.MethodPost:
 			if strings.HasSuffix(r.URL.Path, "/optimize-images") {
 				handleOptimizeImages(state, cfg.SitesDir, cfg.FileUID, cfg.FileGID, logger, w, r)
+			} else if strings.HasSuffix(r.URL.Path, "/redownload") {
+				handleRedownloadSite(state, cfg.SitesDir, cfg.FileUID, cfg.FileGID, reconcileCh, logger, w, r)
 			} else {
 				http.Error(w, "not found", http.StatusNotFound)
 			}

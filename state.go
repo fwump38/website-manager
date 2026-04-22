@@ -38,6 +38,7 @@ type SiteView struct {
 	ServeAtApex    bool   `json:"serve_at_apex"`
 	Downloading    bool   `json:"downloading,omitempty"`
 	DownloadError  string `json:"download_error,omitempty"`
+	FramerURL      string `json:"framer_url,omitempty"`
 }
 
 // NewState returns an empty State rooted at sitesDir.
@@ -152,6 +153,7 @@ func (s *State) AllSites() []SiteView {
 			ServeAtApex:    cfg.ServeAtApex,
 			Downloading:    ds.Running,
 			DownloadError:  ds.Error,
+			FramerURL:      cfg.FramerURL,
 		})
 	}
 	return out
