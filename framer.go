@@ -22,6 +22,7 @@ import (
 var framerCDNHosts = []string{
 	"framerusercontent.com",
 	"framer.com",
+	"framercanvas.com",
 }
 
 // framerCDNExcludeHosts lists subdomains that should NOT be downloaded even
@@ -47,6 +48,10 @@ type FramerDownloader struct {
 	// assetCache maps original asset URL → local public path, guarding against
 	// duplicate downloads during a single run.
 	assetCache map[string]string
+	// localNameCounter tracks how many CDN assets have been assigned each flat
+	// local filename (dir/basename) for collision-safe dedup within the
+	// js/, css/, images/, media/ directories.
+	localNameCounter map[string]int
 }
 
 // Download performs the full crawl-and-rewrite pipeline. It calls
@@ -65,12 +70,16 @@ func (d *FramerDownloader) Download() {
 		},
 	}
 	d.assetCache = map[string]string{}
+	d.localNameCounter = map[string]int{}
 
 	if err := d.crawl(ctx); err != nil {
 		d.Logger.Printf("framer download %q: %v", d.SiteName, err)
 		d.State.SetDownloadStatus(d.SiteName, DownloadStatus{Running: false, Error: err.Error()})
 		return
 	}
+	// Recursively download JS modules referenced via relative imports inside
+	// downloaded JS files — these are not discoverable from HTML alone.
+	d.downloadMissingJSModules(ctx)
 	d.Logger.Printf("framer download %q: complete", d.SiteName)
 	d.State.SetDownloadStatus(d.SiteName, DownloadStatus{Running: false})
 }
@@ -81,6 +90,20 @@ func (d *FramerDownloader) crawl(ctx context.Context) error {
 
 	visited := map[string]bool{}
 	queue := []string{d.normalisePageURL(d.BaseURL.String())}
+
+	// Seed the BFS queue from sitemap.xml so deep nested routes
+	// (/news/slug, /program/slug, etc.) are discovered without depending
+	// solely on link traversal.
+	for _, u := range d.fetchSitemapURLs(ctx) {
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Host != d.BaseURL.Host {
+			continue
+		}
+		norm := d.normalisePageURL(u)
+		if !visited[norm] {
+			queue = append(queue, norm)
+		}
+	}
 
 	for len(queue) > 0 {
 		if ctx.Err() != nil {
@@ -170,41 +193,175 @@ func (d *FramerDownloader) downloadPage(ctx context.Context, pageURL string) ([]
 	return links, nil
 }
 
-// stripFramerRuntime removes only analytics/tracking scripts and editor-only
-// elements from the HTML tree. The Framer React runtime, animation bundle,
-// JS module chunks, framer/handover routing data, and body hydration markers
-// are all preserved so that the downloaded site renders identically to the
-// original — including CSS animations, scroll effects, and interactive states.
-//
-// Specifically it removes:
-//   - Inline <script> blocks that reference events.framer.com (analytics)
-//   - Inline <script> blocks that reference __framer_force_showing_editorbar
-//     (Framer editor UI, irrelevant outside framer.com)
-//   - <meta name="framer-search-index"> (Framer search infrastructure)
-func (d *FramerDownloader) stripFramerRuntime(doc *html.Node) {
+// Regex patterns applied to the serialised HTML string after tree rendering,
+// targeting Framer badge/editorbar CSS rules and injected HTML comments.
+var (
+	framerBadgeCSSRe    = regexp.MustCompile(`\s*#__framer-badge-container\s*\{[\s\S]*?\}\s*`)
+	framerEditorCSSRe   = regexp.MustCompile(`\s*#__framer-editorbar[a-zA-Z-]*\s*\{[\s\S]*?\}\s*`)
+	framerHTMLCommentRe = regexp.MustCompile(`<!--\s*(?:Made in Framer|Published)[^>]*-->`)
+)
+
+// postCleanHTML removes Framer badge/editorbar inline CSS rules and injected
+// HTML comments from a serialised HTML string.
+func postCleanHTML(h string) string {
+	h = framerBadgeCSSRe.ReplaceAllLiteralString(h, "\n")
+	h = framerEditorCSSRe.ReplaceAllLiteralString(h, "\n")
+	h = framerHTMLCommentRe.ReplaceAllLiteralString(h, "")
+	return strings.ReplaceAll(h, "notranslate editorbar ", "notranslate ")
+}
+
+// sitemapLocRe matches <loc>...</loc> entries in sitemap XML.
+var sitemapLocRe = regexp.MustCompile(`<loc>\s*(https?://[^<\s]+)\s*</loc>`)
+
+// jsRelImportRe matches relative module paths in JS import statements,
+// capturing the filename. Handles static (from "./path.mjs") and dynamic
+// (import("./path.mjs"), import('./...'), import(`./...`)) forms.
+var jsRelImportRe = regexp.MustCompile("(?:from|import)\\s*[\"'`]\\./([^\"'`>\\s]+\\.m?js)[\"'`]")
+
+// fetchSitemapURLs fetches /sitemap.xml and returns all <loc> URLs.
+// Returns nil on any error (sitemap is treated as optional).
+func (d *FramerDownloader) fetchSitemapURLs(ctx context.Context) []string {
+	sitemapURL := d.BaseURL.Scheme + "://" + d.BaseURL.Host + "/sitemap.xml"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sitemapURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; site-manager/1.0)")
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
+	if err != nil {
+		return nil
+	}
+
+	var urls []string
+	for _, m := range sitemapLocRe.FindAllSubmatch(body, -1) {
+		if len(m) >= 2 {
+			urls = append(urls, string(m[1]))
+		}
+	}
+	d.Logger.Printf("framer download %q: sitemap: found %d URLs", d.SiteName, len(urls))
+	return urls
+}
+
+// downloadMissingJSModules scans downloaded JS/MJS files for relative import
+// statements and downloads any referenced modules not yet in the asset cache.
+// The process repeats until no new modules are found (fixed-point iteration),
+// capturing transitively-referenced modules that are invisible from HTML alone.
+func (d *FramerDownloader) downloadMissingJSModules(ctx context.Context) {
+	type jsEntry struct {
+		cdnURL      string
+		localPublic string
+	}
+	for {
+		var jsAssets []jsEntry
+		for cdnURL, localPublic := range d.assetCache {
+			lo := strings.ToLower(cdnURL)
+			if strings.HasSuffix(lo, ".js") || strings.HasSuffix(lo, ".mjs") {
+				jsAssets = append(jsAssets, jsEntry{cdnURL: cdnURL, localPublic: localPublic})
+			}
+		}
+
+		added := 0
+		for _, js := range jsAssets {
+			localFS := filepath.Join(d.SiteDir, filepath.FromSlash(strings.TrimPrefix(js.localPublic, "/")))
+			data, err := os.ReadFile(localFS)
+			if err != nil {
+				continue
+			}
+
+			for _, m := range jsRelImportRe.FindAllSubmatch(data, -1) {
+				if len(m) < 2 {
+					continue
+				}
+				abs := d.resolveURL(js.cdnURL, "./"+string(m[1]))
+				if abs == "" {
+					continue
+				}
+				if _, cached := d.assetCache[abs]; !cached {
+					if local := d.downloadAssetCtx(ctx, abs, d.BaseURL); local != "" {
+						d.Logger.Printf("framer download %q: dynamic module %s", d.SiteName, string(m[1]))
+						added++
+					}
+				}
+			}
+		}
+
+		if added == 0 {
+			break
+		}
+	}
+}
+
+// cleanFramerNoise removes Framer editor/branding artifacts from the HTML tree:
+//   - data-framer-hydrate-v2 attribute (baked-in routeId causes wrong hydration
+//     on sub-pages; stripping forces URL-based SPA routing instead)
+//   - "Made in Framer" badge, editor bar, canvas sandbox, drag overlay elements
+//   - Editor bar <link>/<script> tags and modulepreload hints
+//   - Analytics and editor-only inline scripts
+//   - <meta name="framer-search-index">
+func (d *FramerDownloader) cleanFramerNoise(doc *html.Node) {
+	removeByID := map[string]bool{
+		"__framer-badge-container":     true,
+		"__framer-editorbar-container": true,
+		"__framer-editorbar":           true,
+		"canvas_sandbox":               true,
+		"drag-overlay":                 true,
+	}
+
 	var toRemove []*html.Node
 
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
+			// Remove whole element if its id matches.
+			if id := attrVal(n, "id"); id != "" && removeByID[id] {
+				toRemove = append(toRemove, n)
+				return
+			}
+
+			// Strip data-framer-hydrate-v2 attribute from every element.
+			for i := len(n.Attr) - 1; i >= 0; i-- {
+				if n.Attr[i].Key == "data-framer-hydrate-v2" {
+					n.Attr = append(n.Attr[:i], n.Attr[i+1:]...)
+					break
+				}
+			}
+
 			switch n.Data {
 			case "script":
+				src := attrVal(n, "src")
 				typ := attrVal(n, "type")
-				// Remove inline scripts that are purely analytics or editor UI.
-				// All other scripts (including the React bundle and framer/handover
-				// routing data) are kept so hydration and animations work.
-				if typ == "" || typ == "text/javascript" {
+				if strings.Contains(src, "editorbar") {
+					toRemove = append(toRemove, n)
+					return
+				}
+				if (typ == "" || typ == "text/javascript") && src == "" {
 					if c := n.FirstChild; c != nil && c.Type == html.TextNode {
-						src := c.Data
-						if strings.Contains(src, "__framer_force_showing_editorbar") ||
-							strings.Contains(src, "events.framer.com") {
+						txt := c.Data
+						if strings.Contains(txt, "__framer_force_showing_editorbar") ||
+							strings.Contains(txt, "events.framer.com") ||
+							strings.Contains(txt, "cssBundleURL") ||
+							strings.Contains(txt, "deferredJsFiles") {
 							toRemove = append(toRemove, n)
 							return
 						}
 					}
 				}
+			case "link":
+				if strings.Contains(attrVal(n, "href"), "editorbar") {
+					toRemove = append(toRemove, n)
+					return
+				}
 			case "meta":
-				// Remove Framer search infrastructure meta tag.
 				if attrVal(n, "name") == "framer-search-index" {
 					toRemove = append(toRemove, n)
 					return
@@ -234,8 +391,8 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 		return nil, nil, err
 	}
 
-	// Remove analytics/editor-only scripts; keep the React hydration bundle.
-	d.stripFramerRuntime(doc)
+	// Remove Framer editor/branding noise; keep the React hydration bundle.
+	d.cleanFramerNoise(doc)
 
 	var links []string
 
@@ -342,7 +499,9 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 	if err := html.Render(&buf, doc); err != nil {
 		return nil, nil, err
 	}
-	return buf.Bytes(), links, nil
+	// Post-render regex cleanup for inline CSS rules and HTML comments that
+	// are awkward to remove via tree manipulation.
+	return []byte(postCleanHTML(buf.String())), links, nil
 }
 
 // cssURLRe matches url(...) references in CSS.
@@ -366,7 +525,7 @@ func (d *FramerDownloader) rewriteCSS(ctx context.Context, content []byte, cssUR
 }
 
 // jsFramerURLRe matches string literals that contain a Framer CDN hostname.
-var jsFramerURLRe = regexp.MustCompile(`(["` + "`" + `'])(https?://(?:[a-zA-Z0-9-]+\.)*(?:framerusercontent\.com|framer\.com)/[^"` + "`" + `'<>\s]*)(["` + "`" + `'])`)
+var jsFramerURLRe = regexp.MustCompile(`(["` + "`" + `'])(https?://(?:[a-zA-Z0-9-]+\.)*(?:framerusercontent\.com|framer\.com|framercanvas\.com)/[^"` + "`" + `'<>\s]*)(["` + "`" + `'])`)
 
 // rewriteJS rewrites Framer CDN URLs embedded in JavaScript string literals.
 func (d *FramerDownloader) rewriteJS(ctx context.Context, src string) string {
@@ -510,15 +669,67 @@ func (d *FramerDownloader) pageURLToFilePath(pageURL *url.URL) string {
 	return filepath.Join(d.SiteDir, filepath.FromSlash(strings.TrimPrefix(p, "/")), "index.html")
 }
 
+// assetSubdir returns the flat local subdirectory for a CDN asset based on
+// file extension and CDN path patterns: js, css, images, media, or assets.
+func (d *FramerDownloader) assetSubdir(assetURL *url.URL) string {
+	p := assetURL.Path
+	switch strings.ToLower(path.Ext(p)) {
+	case ".js", ".mjs":
+		return "js"
+	case ".css":
+		return "css"
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico", ".avif", ".bmp", ".tiff":
+		return "images"
+	case ".mp4", ".webm", ".ogg", ".mov", ".avi", ".mkv",
+		".mp3", ".wav", ".flac", ".aac", ".opus",
+		".pdf", ".zip", ".tar", ".gz",
+		".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return "media"
+	default:
+		if strings.Contains(p, "/images/") {
+			return "images"
+		}
+		if strings.Contains(p, "/files/") {
+			return "media"
+		}
+		return "assets"
+	}
+}
+
+// uniqueLocalName returns a collision-safe flat filename within subdir.
+// The first CDN URL to claim a given basename keeps it as-is; subsequent
+// URLs sharing the same basename receive a numeric suffix (_2, _3, …).
+func (d *FramerDownloader) uniqueLocalName(subdir, basename string) string {
+	key := subdir + "/" + basename
+	if _, taken := d.localNameCounter[key]; !taken {
+		d.localNameCounter[key] = 1
+		return basename
+	}
+	d.localNameCounter[key]++
+	n := d.localNameCounter[key]
+	ext := path.Ext(basename)
+	stem := strings.TrimSuffix(basename, ext)
+	return fmt.Sprintf("%s_%d%s", stem, n, ext)
+}
+
 // assetURLToPath maps a CDN asset URL to (localFilesystemPath, localPublicPath).
+// Assets are stored in flat category directories: js/, css/, images/, media/.
 func (d *FramerDownloader) assetURLToPath(assetURL *url.URL) (string, string, error) {
-	// Strip query/fragment for the file path.
 	cleanPath := assetURL.Path
 	if cleanPath == "" || cleanPath == "/" {
 		return "", "", fmt.Errorf("asset URL has empty path: %s", assetURL)
 	}
-	// Build: assets/cdn/{host}{path}
-	rel := path.Join("assets", "cdn", assetURL.Host, cleanPath)
+	basename := path.Base(cleanPath)
+	if basename == "" || basename == "." {
+		return "", "", fmt.Errorf("asset URL has no filename: %s", assetURL)
+	}
+	// Strip any query string that may have leaked into the path segment.
+	if i := strings.IndexByte(basename, '?'); i >= 0 {
+		basename = basename[:i]
+	}
+	subdir := d.assetSubdir(assetURL)
+	localName := d.uniqueLocalName(subdir, basename)
+	rel := subdir + "/" + localName
 	localPath := filepath.Join(d.SiteDir, filepath.FromSlash(rel))
 	localPublic := "/" + rel
 	return localPath, localPublic, nil
