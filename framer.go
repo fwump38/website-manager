@@ -210,11 +210,21 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 				if n.FirstChild != nil && n.FirstChild.Type == html.TextNode {
 					n.FirstChild.Data = d.rewriteJS(ctx, n.FirstChild.Data)
 				}
+			case "style":
+				// Rewrite url() references inside inline <style> blocks (e.g. @font-face src).
+				if n.FirstChild != nil && n.FirstChild.Type == html.TextNode {
+					rewritten := d.rewriteCSS(ctx, []byte(n.FirstChild.Data), pageURL)
+					n.FirstChild.Data = string(rewritten)
+				}
 			case "link":
+				rel := attrVal(n, "rel")
 				for i, a := range n.Attr {
 					if a.Key == "href" && a.Val != "" {
-						rel := attrVal(n, "rel")
-						if strings.Contains(rel, "stylesheet") || strings.Contains(rel, "preload") || strings.Contains(rel, "modulepreload") {
+						switch {
+						case strings.Contains(rel, "stylesheet") ||
+							strings.Contains(rel, "preload") ||
+							strings.Contains(rel, "modulepreload") ||
+							rel == "icon" || rel == "shortcut icon" || rel == "apple-touch-icon":
 							if local := d.downloadAssetCtx(ctx, a.Val, pageURL); local != "" {
 								n.Attr[i].Val = local
 							}
