@@ -263,7 +263,9 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 }
 
 // cssURLRe matches url(...) references in CSS.
-var cssURLRe = regexp.MustCompile(`url\(\s*(['"]?)([^'"\)\s]+)\1\s*\)`)
+// Note: RE2 (used by Go) does not support backreferences, so we accept any
+// optional closing quote rather than requiring it to match the opening one.
+var cssURLRe = regexp.MustCompile(`url\(\s*(['"]?)([^'"\)\s]+)['"]?\s*\)`)
 
 // rewriteCSS rewrites Framer CDN url() references in CSS content to local paths.
 func (d *FramerDownloader) rewriteCSS(ctx context.Context, content []byte, cssURL *url.URL) []byte {
