@@ -221,6 +221,8 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 				for i, a := range n.Attr {
 					if a.Key == "href" && a.Val != "" {
 						switch {
+						case rel == "canonical":
+							n.Attr[i].Val = d.rewriteOrigin(a.Val)
 						case strings.Contains(rel, "stylesheet") ||
 							strings.Contains(rel, "preload") ||
 							strings.Contains(rel, "modulepreload") ||
@@ -254,14 +256,19 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 					}
 				}
 			case "meta":
-				// og:image etc.
-				if attrVal(n, "property") == "og:image" || attrVal(n, "name") == "twitter:image" {
-					for i, a := range n.Attr {
-						if a.Key == "content" {
-							if local := d.downloadAssetCtx(ctx, a.Val, pageURL); local != "" {
-								n.Attr[i].Val = local
-							}
+				prop := attrVal(n, "property")
+				metaName := attrVal(n, "name")
+				for i, a := range n.Attr {
+					if a.Key != "content" || a.Val == "" {
+						continue
+					}
+					switch {
+					case prop == "og:image" || metaName == "twitter:image":
+						if local := d.downloadAssetCtx(ctx, a.Val, pageURL); local != "" {
+							n.Attr[i].Val = local
 						}
+					case prop == "og:url" || prop == "og:site_name" || metaName == "twitter:url":
+						n.Attr[i].Val = d.rewriteOrigin(a.Val)
 					}
 				}
 			}
@@ -500,6 +507,19 @@ func (d *FramerDownloader) isSameOrigin(rawURL string) bool {
 		return false
 	}
 	return u.Host == d.BaseURL.Host
+}
+
+// rewriteOrigin rewrites the host of rawURL from the source Framer origin to
+// the target site name (e.g. for canonical / og:url). If rawURL cannot be
+// parsed or does not share the source origin, it is returned unchanged.
+func (d *FramerDownloader) rewriteOrigin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host != d.BaseURL.Host {
+		return rawURL
+	}
+	u.Scheme = "https"
+	u.Host = d.SiteName
+	return u.String()
 }
 
 // isFramerCDN reports whether host is a Framer CDN host that should be localised.
