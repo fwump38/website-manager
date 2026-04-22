@@ -170,13 +170,111 @@ func (d *FramerDownloader) downloadPage(ctx context.Context, pageURL string) ([]
 	return links, nil
 }
 
-// rewriteHTML parses HTML, rewrites asset references, collects internal page
-// links, and serialises the mutated tree back to bytes.
+// stripFramerRuntime removes Framer's React SPA runtime from the HTML tree,
+// leaving clean server-side-rendered HTML+CSS that works without any JS
+// dependencies. This is the key step that makes navigation work correctly and
+// removes all references to Framer's infrastructure.
+//
+// Specifically it removes:
+//   - <script type="module" data-framer-bundle="..."> — the main React bundle
+//     that hydrates the page and hijacks all link navigation
+//   - <script type="framer/handover"> — CMS slug mapping used by the router
+//   - <link rel="modulepreload" href="*.mjs"> — preload hints for JS bundles
+//     that will never be loaded once the main bundle is removed
+//   - Inline <script> blocks containing Framer-specific globals
+//     (__framer_force_showing_editorbar, framer_variant, events.framer.com)
+//   - data-framer-hydrate-v2 attribute on <body> that marks the page for
+//     client-side takeover
+//   - <meta name="framer-search-index"> Framer search infrastructure link
+//
+// Framer produces fully server-side-rendered HTML, so all content, layout,
+// CSS, and images remain intact. Plain <a href> links work correctly once the
+// JS router is removed.
+func (d *FramerDownloader) stripFramerRuntime(doc *html.Node) {
+	var toRemove []*html.Node
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "script":
+				typ := attrVal(n, "type")
+				// Remove the main Framer/React bundle that hydrates the page
+				// and takes over all link navigation.
+				if typ == "module" && attrVal(n, "data-framer-bundle") != "" {
+					toRemove = append(toRemove, n)
+					return
+				}
+				// Remove Framer CMS handover data (used by the client router).
+				if typ == "framer/handover" {
+					toRemove = append(toRemove, n)
+					return
+				}
+				// Remove inline scripts containing Framer-specific globals or
+				// analytics endpoint references.
+				if typ == "" || typ == "text/javascript" {
+					if c := n.FirstChild; c != nil && c.Type == html.TextNode {
+						src := c.Data
+						if strings.Contains(src, "__framer_force_showing_editorbar") ||
+							strings.Contains(src, "events.framer.com") ||
+							strings.Contains(src, "framer_variant") {
+							toRemove = append(toRemove, n)
+							return
+						}
+					}
+				}
+			case "link":
+				rel := attrVal(n, "rel")
+				href := attrVal(n, "href")
+				// Remove modulepreload hints for JS bundles — they will never
+				// be loaded once the main bundle script tag is removed.
+				if (rel == "modulepreload" || rel == "preload") &&
+					(strings.HasSuffix(href, ".mjs") || strings.HasSuffix(href, ".js")) {
+					toRemove = append(toRemove, n)
+					return
+				}
+			case "meta":
+				// Remove Framer search infrastructure meta tag.
+				if attrVal(n, "name") == "framer-search-index" {
+					toRemove = append(toRemove, n)
+					return
+				}
+			case "body":
+				// Remove the hydration marker that triggers React's client-side
+				// takeover of the server-rendered HTML.
+				filtered := n.Attr[:0]
+				for _, a := range n.Attr {
+					if !strings.HasPrefix(a.Key, "data-framer-hydrate") {
+						filtered = append(filtered, a)
+					}
+				}
+				n.Attr = filtered
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+
+	for _, n := range toRemove {
+		if n.Parent != nil {
+			n.Parent.RemoveChild(n)
+		}
+	}
+}
+
+// rewriteHTML parses HTML, strips the Framer React runtime, rewrites asset
+// references, collects internal page links, and serialises the mutated tree.
 func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL *url.URL) ([]byte, []string, error) {
 	doc, err := html.Parse(bytes.NewReader(raw))
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Strip the Framer React runtime before any asset walk so that the JS
+	// bundles are neither downloaded nor referenced in the output.
+	d.stripFramerRuntime(doc)
 
 	var links []string
 
