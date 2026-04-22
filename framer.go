@@ -24,6 +24,13 @@ var framerCDNHosts = []string{
 	"framer.com",
 }
 
+// framerCDNExcludeHosts lists subdomains that should NOT be downloaded even
+// though they are under a framerCDNHosts domain. These are analytics/tracking
+// endpoints whose content is irrelevant to a static site mirror.
+var framerCDNExcludeHosts = []string{
+	"events.framer.com",
+}
+
 // FramerDownloader crawls a Framer-hosted website, downloads all pages and
 // Framer CDN assets, rewrites URLs to be self-hosted, and writes the result
 // into SiteDir. It is designed to run in a background goroutine.
@@ -487,6 +494,11 @@ func (d *FramerDownloader) isSameOrigin(rawURL string) bool {
 
 // isFramerCDN reports whether host is a Framer CDN host that should be localised.
 func (d *FramerDownloader) isFramerCDN(host string) bool {
+	for _, exc := range framerCDNExcludeHosts {
+		if host == exc {
+			return false
+		}
+	}
 	for _, cdn := range framerCDNHosts {
 		if host == cdn || strings.HasSuffix(host, "."+cdn) {
 			return true
