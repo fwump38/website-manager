@@ -23,6 +23,7 @@ var framerCDNHosts = []string{
 	"framerusercontent.com",
 	"framer.com",
 	"framercanvas.com",
+	"framerstatic.com",
 }
 
 // framerCDNExcludeHosts lists subdomains that should NOT be downloaded even
@@ -216,7 +217,7 @@ var sitemapLocRe = regexp.MustCompile(`<loc>\s*(https?://[^<\s]+)\s*</loc>`)
 // jsRelImportRe matches relative module paths in JS import statements,
 // capturing the filename. Handles static (from "./path.mjs") and dynamic
 // (import("./path.mjs"), import('./...'), import(`./...`)) forms.
-var jsRelImportRe = regexp.MustCompile("(?:from|import)\\s*[\"'`]\\./([^\"'`>\\s]+\\.m?js)[\"'`]")
+var jsRelImportRe = regexp.MustCompile(`(?:from|import\s*\()\s*["'` + "`" + `]\./([^"'` + "`" + `\s>]+\.m?js)["'` + "`" + `]`)
 
 // fetchSitemapURLs fetches /sitemap.xml and returns all <loc> URLs.
 // Returns nil on any error (sitemap is treated as optional).
@@ -439,9 +440,17 @@ func (d *FramerDownloader) rewriteHTML(ctx context.Context, raw []byte, pageURL 
 						switch {
 						case rel == "canonical":
 							n.Attr[i].Val = d.rewriteOrigin(a.Val)
+						case strings.Contains(rel, "modulepreload"):
+							if local := d.downloadAssetCtx(ctx, a.Val, pageURL); local != "" {
+								n.Attr[i].Val = local
+							} else if (strings.HasPrefix(a.Val, "./") || strings.HasPrefix(a.Val, "../")) &&
+								(strings.HasSuffix(a.Val, ".mjs") || strings.HasSuffix(a.Val, ".js")) {
+								// Relative JS module hint that isn't on a CDN — all JS
+								// lives in /js/ so rewrite to the flat path.
+								n.Attr[i].Val = "/js/" + path.Base(a.Val)
+							}
 						case strings.Contains(rel, "stylesheet") ||
 							strings.Contains(rel, "preload") ||
-							strings.Contains(rel, "modulepreload") ||
 							rel == "icon" || rel == "shortcut icon" || rel == "apple-touch-icon":
 							if local := d.downloadAssetCtx(ctx, a.Val, pageURL); local != "" {
 								n.Attr[i].Val = local
@@ -525,7 +534,7 @@ func (d *FramerDownloader) rewriteCSS(ctx context.Context, content []byte, cssUR
 }
 
 // jsFramerURLRe matches string literals that contain a Framer CDN hostname.
-var jsFramerURLRe = regexp.MustCompile(`(["` + "`" + `'])(https?://(?:[a-zA-Z0-9-]+\.)*(?:framerusercontent\.com|framer\.com|framercanvas\.com)/[^"` + "`" + `'<>\s]*)(["` + "`" + `'])`)
+var jsFramerURLRe = regexp.MustCompile(`(["` + "`" + `'])(https?://(?:[a-zA-Z0-9-]+\.)*(?:framerusercontent\.com|framer\.com|framercanvas\.com|framerstatic\.com)/[^"` + "`" + `'<>\s]*)(["` + "`" + `'])`)
 
 // rewriteJS rewrites Framer CDN URLs embedded in JavaScript string literals.
 func (d *FramerDownloader) rewriteJS(ctx context.Context, src string) string {
